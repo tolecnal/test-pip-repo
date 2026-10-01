@@ -13,7 +13,10 @@
   "extraPaths": [
     "pkg/src"
   ],
+  "venvPath": ".venvs",
+  "venv": "lint",
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",
-  "reportMissingTypeStubs": false
+  "reportMissingTypeStubs": false,
+  "reportMissingModuleSource": "error"
 }

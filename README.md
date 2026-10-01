@@ -410,7 +410,14 @@ rather than arguing about line length:
   which is what `requirements-dev.txt` pins.
 - **isort** (`.isort.cfg`) — `profile = black` at 100 columns, matching Ruff's import
   rules so the two never disagree.
-- **pyright** (`pyrightconfig.json`) — `typeCheckingMode: "standard"`, clean. Strict mode
+- **pyright** (`pyrightconfig.json`) — `typeCheckingMode: "standard"`, clean. It is pinned
+  to `.venvs/lint` (`venvPath` + `venv`), so it resolves the test package's `six` and
+  `idna` from there rather than from whatever Python happens to be on `PATH` — a
+  developer box may have those installed system-wide while a CI runner does not.
+  `reportMissingModuleSource` is an error for the same reason: resolving a stub without
+  its source is the symptom of looking at the wrong environment, and it should fail rather
+  than warn. Run `make lint` once so your editor's pyright has that venv to resolve
+  against. Strict mode
   reports ~70 further findings, essentially all `Any` propagating out of `resp.json()`:
   devpi's JSON payloads are deliberately treated as loose data and validated at the point
   of use, so pinning them down with TypedDicts would add weight without catching anything

@@ -79,6 +79,8 @@ $(LINT)/bin/pyright: requirements-dev.txt
 	$(LINT)/bin/pip install -q -r requirements-dev.txt
 	@touch $@
 
+# pyright resolves the test package's imports from this venv (see pyrightconfig.json),
+# so the venv is what must hold six and idna -- not the ambient Python.
 lint: $(LINT)/bin/pyright
 	$(LINT)/bin/ruff check $(SOURCES)
 	$(LINT)/bin/isort --check-only --diff $(SOURCES)
