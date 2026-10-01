@@ -169,7 +169,7 @@ def _listed(ctx: Context) -> dict[str, list[simple.Link]]:
     """Versions the index currently lists for our package, fetched at most once."""
     if "versions" not in ctx.share:
         resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
-        if resp.status not in (HTTPStatus.OK, HTTPStatus.NOT_FOUND):
+        if resp.status not in {HTTPStatus.OK, HTTPStatus.NOT_FOUND}:
             raise Fail(f"simple page for {ctx.cfg.package} returned HTTP {resp.status}")
         ctx.share["links"] = links
         ctx.share["versions"] = simple.versions(links)
@@ -543,7 +543,7 @@ def mirror_cache(ctx: Context) -> str:
 def anonymous_read(ctx: Context) -> str:
     resp, _ = simple.fetch(ctx.cfg, ctx.cfg.package, auth=False)
     # 404 means the index is readable, the project just is not on it yet.
-    allowed = resp.status in (HTTPStatus.OK, HTTPStatus.NOT_FOUND)
+    allowed = resp.status in {HTTPStatus.OK, HTTPStatus.NOT_FOUND}
     if ctx.cfg.expect_anonymous_read and not allowed:
         raise Fail(
             f"anonymous read of the simple index returned HTTP {resp.status}; "
@@ -575,7 +575,7 @@ def overwrite_protection(ctx: Context) -> str:
             volatile = _volatile(ctx)
             expect_reject, basis = not volatile, f"auto (volatile={volatile})"
         else:
-            expect_reject, basis = expect.strip().lower() in ("1", "true", "yes"), "configured"
+            expect_reject, basis = expect.strip().lower() in {"1", "true", "yes"}, "configured"
     else:
         expect_reject, basis = expect, "configured"
 

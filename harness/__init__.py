@@ -9,7 +9,7 @@ import sys
 
 # Ruff sees this as dead code because the project targets 3.11; it exists precisely to
 # greet someone whose interpreter is older with a sentence instead of a traceback.
-if sys.version_info < (3, 11):  # noqa: UP036  -- tomllib, used to read pipcheck.toml
+if sys.version_info < (3, 11):  # ruff: ignore[outdated-version-block]  -- tomllib, used to read pipcheck.toml
     raise SystemExit(
         "pipcheck needs Python 3.11 or newer; this is "
         f"{sys.version.split()[0]} ({sys.executable}).\n"

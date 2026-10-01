@@ -121,17 +121,8 @@ def run(
     print()
 
     started = time.monotonic()
-    phase = None
-    blocked = None  # set once a fatal check fails; everything after is skipped
     try:
-        for definition in selected:
-            if definition.phase != phase:
-                phase = definition.phase
-                print(cyan(f"[{phase}]"))
-            result = _run_one(ctx, definition, blocked=blocked)
-            if result.status == FAIL and definition.fatal:
-                blocked = f"{definition.name} failed"
-            report.results.append(result)
+        _run_all(ctx, selected, report)
     except KeyboardInterrupt:
         print(red("\ninterrupted"))
     finally:
@@ -157,7 +148,7 @@ def run(
     while saved.exists():
         saved = REPORT_DIR / f"{base}-{serial}.json"
         serial += 1
-    saved.write_text(report.to_json())
+    saved.write_text(report.to_json(), encoding="utf-8")
     print(dim(f"  saved {saved.relative_to(saved.parent.parent)}"
               f"   (compare runs with: ./pipcheck compare)"))
     if json_out:
@@ -165,7 +156,7 @@ def run(
         if not path.is_absolute() and path.parent == Path():
             path = REPORT_DIR / path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(report.to_json())
+        path.write_text(report.to_json(), encoding="utf-8")
         print(dim(f"  saved {path}"))
     return report
 
@@ -182,7 +173,7 @@ def saved_reports() -> list[Path]:
 
 def _load(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"could not read report {path}: {exc}") from exc
 
@@ -304,6 +295,20 @@ def compare(before_path: Path, after_path: Path) -> int:
     return 0
 
 
+def _run_all(ctx: Context, selected: list[checks.CheckDef], report: Report) -> None:
+    """Run each check in order, printing phase headings and honouring fatal failures."""
+    phase = None
+    blocked = None  # set once a fatal check fails; everything after is skipped
+    for definition in selected:
+        if definition.phase != phase:
+            phase = definition.phase
+            print(cyan(f"[{phase}]"))
+        result = _run_one(ctx, definition, blocked=blocked)
+        if result.status == FAIL and definition.fatal:
+            blocked = f"{definition.name} failed"
+        report.results.append(result)
+
+
 def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None = None) -> Result:
     label = f"  {definition.name:<24}"
     print(label, end="", flush=True)
@@ -322,7 +327,7 @@ def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None =
             status, detail = FAIL, str(exc)
         except ConnectionError as exc:
             status, detail = FAIL, f"could not reach the server: {exc}"
-        except Exception as exc:  # noqa: BLE001 -- a harness bug must not abort the suite
+        except Exception as exc:  # ruff: ignore[blind-except] -- a harness bug must not abort the suite
             status = ERROR
             detail = f"{type(exc).__name__}: {exc}"
     duration = time.monotonic() - started
@@ -364,7 +369,7 @@ def _summarise(report: Report, cfg: Config) -> None:
     print()
     print(f"  {', '.join(parts)} in {human(report.duration)}")
 
-    failures = [r for r in report.results if r.status in (FAIL, ERROR)]
+    failures = [r for r in report.results if r.status in {FAIL, ERROR}]
     if not failures and not tally[PASS]:
         print(f"  {yellow('nothing ran')} -- every selected check was skipped")
         print()

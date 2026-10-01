@@ -26,13 +26,13 @@ def read() -> str:
 def write(version: str) -> str:
     """Rewrite the version line in place, leaving the rest of the file untouched."""
     validate(version)
-    text = PYPROJECT.read_text()
+    text = PYPROJECT.read_text(encoding="utf-8")
     new_text, count = _VERSION_LINE.subn(
         lambda m: f"{m['prefix']}{version}{m['suffix']}", text, count=1
     )
     if count != 1:
         raise SystemExit(f"could not find a single version line in {PYPROJECT}")
-    PYPROJECT.write_text(new_text)
+    PYPROJECT.write_text(new_text, encoding="utf-8")
     return version
 
 

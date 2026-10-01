@@ -153,7 +153,7 @@ def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Co
     cfg = Config.build(data, sources)
     # Catch the commonest config slip (a missing scheme) here, where the message can
     # name the key, rather than deep inside the first check that tries to fetch.
-    if urllib.parse.urlsplit(cfg.base).scheme not in ("http", "https"):
+    if urllib.parse.urlsplit(cfg.base).scheme not in {"http", "https"}:
         raise SystemExit(
             f"url must start with http:// or https:// (got {cfg.url!r})\n"
             "set it in pipcheck.toml, or via DEVPI_URL / --url"

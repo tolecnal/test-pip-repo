@@ -1,0 +1,33 @@
+# Lint only: Ruff, isort and pyright, through the same `make lint` used locally.
+#
+# The devpi smoke suite is deliberately NOT run here -- it needs a reachable devpi
+# server and it publishes real releases to an index. Run it by hand from a clone
+# (see README: "Testing an upgrade").
+
+stages:
+  - lint
+
+lint:
+  stage: lint
+  # The full image (not -slim) already has make, git and the tools pyright needs to
+  # fetch its Node runtime. On -slim, add: apt-get update && apt-get install -y make
+  image: python:3.11
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files:
+        - requirements-dev.txt
+    paths:
+      - .cache/pip
+  script:
+    # Creates .venvs/lint from requirements-dev.txt, then runs ruff, isort, pyright.
+    - make lint
+    # A clean checkout has no generated _build_info.py: this proves the package still
+    # imports without it and that the CLI wiring is intact.
+    - ./pipcheck --version
+    - ./pipcheck list > /dev/null
+    - ./pipcheck show > /dev/null
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH

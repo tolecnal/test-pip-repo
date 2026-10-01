@@ -1,7 +1,9 @@
 # Tooling for checking the code in this repo. Install with `make lint`, which creates
 # .venvs/lint on first use. Nothing here is needed to *run* pipcheck -- the harness
 # itself is standard-library only.
-ruff>=0.14
+# >=0.16.10 for the `# ruff: ignore[rule-name]` suppression directive the
+# code uses, and for the preview rules ruff.toml enables.
+ruff>=0.16.10
 isort>=5.13
 pyright>=1.1.400
 

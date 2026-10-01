@@ -199,6 +199,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
     targets += list(VENV_DIR.glob("test-*"))
     targets += list(config.PKG_DIR.glob("src/*.egg-info"))
     targets += [p for p in config.ROOT.rglob("__pycache__") if ".venvs" not in p.parts]
+    targets.append(config.ROOT / ".ruff_cache")
     targets.append(client.CLIENT_DIR)
     if args.all:
         targets += [VENV_DIR, REPORT_DIR]
@@ -238,7 +239,7 @@ def _resolve_report(value: str) -> Path:
 def _check_names(path: Path) -> frozenset[str]:
     """Return the set of checks a saved report covers."""
     return frozenset(
-        r.get("name") for r in json.loads(path.read_text()).get("results", [])
+        r.get("name") for r in json.loads(path.read_text(encoding="utf-8")).get("results", [])
     )
 
 
@@ -252,7 +253,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print(bold(f"saved runs in {REPORT_DIR.name}/") + dim("  (oldest first)"))
         width = max(len(p.name) for p in saved) + 2
         for path in saved:
-            report = json.loads(path.read_text())
+            report = json.loads(path.read_text(encoding="utf-8"))
             counts = report.get("counts", {})
             versions = (report.get("server") or {}).get("versions") or {}
             stack = ", ".join(f"{k} {v}" for k, v in sorted(versions.items()))

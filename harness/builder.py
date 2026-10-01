@@ -16,7 +16,7 @@ from .config import BUILD_INFO, DIST_DIR, PKG_DIR, Config
 from .util import Proc, run, sha256_file
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 STAMP_TEMPLATE = '''"""Build stamp.
 
@@ -40,7 +40,8 @@ def reset_stamp() -> None:
     BUILD_INFO.write_text(
         STAMP_TEMPLATE.format(
             version="0.0.0", build_id="unstamped", built_at="1970-01-01T00:00:00Z"
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -54,7 +55,8 @@ def stamp(version: str, build_id: str | None = None) -> tuple[str, str]:
     build_id = build_id or secrets.token_hex(6)
     built_at = _now()
     BUILD_INFO.write_text(
-        STAMP_TEMPLATE.format(version=version, build_id=build_id, built_at=built_at)
+        STAMP_TEMPLATE.format(version=version, build_id=build_id, built_at=built_at),
+        encoding="utf-8",
     )
     return build_id, built_at
 
@@ -101,13 +103,13 @@ def build(cfg: Config, st: state.State, *, clean: bool = True) -> state.Build:
 
 
 @contextlib.contextmanager
-def preserved_source() -> Iterator[None]:
+def preserved_source() -> Generator[None]:
     """Leave pyproject's version and the build stamp exactly as they were.
 
     Lets a check build something without disturbing the working tree.
     """
     version = versioning.read()
-    snapshot = BUILD_INFO.read_text() if BUILD_INFO.exists() else None
+    snapshot = BUILD_INFO.read_text(encoding="utf-8") if BUILD_INFO.exists() else None
     try:
         yield
     finally:
@@ -115,8 +117,8 @@ def preserved_source() -> Iterator[None]:
             versioning.write(version)
         if snapshot is None:
             reset_stamp()
-        elif BUILD_INFO.read_text() != snapshot:
-            BUILD_INFO.write_text(snapshot)
+        elif BUILD_INFO.read_text(encoding="utf-8") != snapshot:
+            BUILD_INFO.write_text(snapshot, encoding="utf-8")
 
 
 def build_variant(cfg: Config, outdir: Path, version: str | None = None) -> state.Build:

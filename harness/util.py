@@ -98,7 +98,7 @@ def run(
         print(dim(f"  $ {shlex_join(cmd)}"))
     started = time.monotonic()
     try:
-        proc = subprocess.run(  # noqa: S603  -- running pip/twine is this tool's purpose
+        proc = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]  -- running pip/twine is this tool's purpose
             cmd,
             check=False,
             cwd=str(cwd) if cwd else None,
@@ -139,7 +139,7 @@ class Response:
     def text(self) -> str:
         return self.body.decode("utf-8", "replace")
 
-    def json(self) -> Any:  # noqa: ANN401  -- JSON is Any by nature
+    def json(self) -> Any:  # ruff: ignore[any-type]  -- JSON is Any by nature
         """Parse the body as JSON. Raises if it is not JSON."""
         return json.loads(self.body or b"null")
 
@@ -156,9 +156,9 @@ def http(
     """Fetch a URL. HTTP error statuses are returned, not raised."""
     # Only ever speak HTTP(S): a `file:` or custom scheme in a config file must not
     # turn a repository check into a local file read.
-    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
         raise ValueError(f"refusing to fetch a non-HTTP(S) URL: {url}")
-    req = urllib.request.Request(url, method=method)  # noqa: S310  -- scheme checked above
+    req = urllib.request.Request(url, method=method)  # ruff: ignore[suspicious-url-open-usage]  -- scheme checked above
     req.add_header("User-Agent", "pipcheck/1.0")
     if accept:
         req.add_header("Accept", accept)
@@ -173,7 +173,7 @@ def http(
         ctx.verify_mode = ssl.CERT_NONE
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # ruff: ignore[suspicious-url-open-usage]
             return Response(
                 url, resp.status, resp.read(), {k.lower(): v for k, v in resp.headers.items()}
             )

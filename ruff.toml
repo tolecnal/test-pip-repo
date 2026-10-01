@@ -11,6 +11,7 @@ src = ["harness", "pkg/src"]
 extend-exclude = [".venvs", "dist", "build"]
 
 [lint]
+preview = true
 select = ["ALL"]
 ignore = [
   # This is a terminal program: printing *is* its user interface.
@@ -28,9 +29,21 @@ ignore = [
   "CPY001",
   # `Fail` and `Skip` read as check outcomes in the check DSL, not as "FailError".
   "N818",
+  # Preview, pydoclint: these mandate Google-style "Returns:" and "Raises:" sections in
+  # every docstring. The docstrings here are prose in the pep257 style -- the first line
+  # already says what comes back, and raising `Fail`/`Skip` is the documented contract of
+  # every check. Sections would restate both at length. Flip these on if the project
+  # ever adopts sectioned docstrings; it is ~70 docstrings of work.
+  "DOC201", "DOC501",
+  # Running pip, twine and devpi *is* the job. The individual call sites carry their own
+  # reviewed suppressions; flagging the import adds nothing.
+  "S404",
 ]
 
 [lint.per-file-ignores]
+# The interpreter guard has to run before any submodule imports tomllib, so this
+# __init__ cannot be only docstrings and re-exports.
+"harness/__init__.py" = ["RUF067"]
 # Tests: asserts are the point, pytest discovers them without a package, and the local
 # imports inside tests are deliberate (they are what is under test).
 "pkg/tests/*" = ["S101", "INP001", "PLC0415"]

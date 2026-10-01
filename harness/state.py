@@ -60,7 +60,8 @@ class State:
 
     def save(self) -> None:
         STATE_FILE.write_text(
-            json.dumps({"builds": [asdict(b) for b in self.builds]}, indent=2) + "\n"
+            json.dumps({"builds": [asdict(b) for b in self.builds]}, indent=2) + "\n",
+            encoding="utf-8",
         )
 
 
@@ -68,7 +69,7 @@ def load() -> State:
     if not STATE_FILE.is_file():
         return State()
     try:
-        raw = json.loads(STATE_FILE.read_text() or "{}")
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
     except json.JSONDecodeError:
         return State()
     return State(builds=[Build(**b) for b in raw.get("builds", [])])

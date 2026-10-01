@@ -396,12 +396,20 @@ the type checker can resolve the test package's imports.
 The settings live in the repo, so an editor's language server and the command line agree
 rather than arguing about line length:
 
-- **Ruff** (`ruff.toml`) — `select = ["ALL"]` at 100 columns, clean. The `ignore` list is
-  short and each entry says why: printing is this tool's interface (`T201`); its long,
-  specific error messages are the product, not a smell (`TRY003`, `EM101`, `EM102`);
-  docstrings are required on modules and classes but not on every one-line helper
-  (`D102`, `D103`, …); and `Fail`/`Skip` read as check outcomes rather than as
-  `FailError` (`N818`). Tests additionally allow `assert` and local imports.
+- **Ruff** (`ruff.toml`) — `select = ["ALL"]` with `preview = true`, at 100 columns,
+  clean. The `ignore` list is short and each entry says why: printing is this tool's
+  interface (`T201`); its long, specific error messages are the product, not a smell
+  (`TRY003`, `EM101`, `EM102`); docstrings are required on modules and classes but not on
+  every one-line helper (`D102`, `D103`, …); `Fail`/`Skip` read as check outcomes rather
+  than as `FailError` (`N818`); and the preview pydoclint rules (`DOC201`, `DOC501`)
+  mandate Google-style `Returns:`/`Raises:` sections, which these prose docstrings do not
+  use — flip them on if you want sectioned docstrings, it is ~70 docstrings of work.
+  Tests additionally allow `assert` and local imports.
+
+  Suppressions use Ruff's own directive with rule *names*, which is what preview asks for
+  and reads better than a code: `# ruff: ignore[blind-except] -- a harness bug must not
+  abort the suite`. There are eight, each with a reason. That syntax needs ruff ≥ 0.16.10,
+  which is what `requirements-dev.txt` pins.
 - **isort** (`.isort.cfg`) — `profile = black` at 100 columns, matching Ruff's import
   rules so the two never disagree.
 - **pyright** (`pyrightconfig.json`) — `typeCheckingMode: "standard"`, clean. Strict mode
@@ -413,6 +421,25 @@ rather than arguing about line length:
 Note that `ruff.toml` targets **py311** because that is what the harness needs. The test
 package in `pkg/` declares `requires-python >=3.9`, so keep its code free of 3.10+
 runtime idioms even where Ruff would permit them.
+
+### Linting in CI
+
+Both pipelines are in the repo and run exactly the `make lint` above, so CI cannot
+disagree with your editor:
+
+| File | Platform |
+|---|---|
+| `.github/workflows/lint.yml` | GitHub Actions |
+| `.gitlab-ci.yml` | GitLab CI |
+
+Each one installs `requirements-dev.txt`, runs Ruff, isort and pyright, and then
+smoke-tests the CLI (`./pipcheck --version`, `list`, `show`) on the clean checkout — that
+last step matters because a fresh clone has no generated `_build_info.py`, so it proves
+the package still imports without its build stamp.
+
+Neither pipeline runs the devpi suite. That is on purpose: `cycle` needs a reachable
+devpi server and it publishes real releases to an index, so it stays a thing you run by
+hand from a clone.
 
 Two conventions worth keeping if you extend the suite:
 
