@@ -19,7 +19,12 @@ _HREF = re.compile(r"""<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)</a>""", re.IGNO
 
 
 def normalize(name: str) -> str:
-    """PEP 503 name normalisation."""
+    """Normalise a project name the way PEP 503 requires.
+
+    Returns:
+        The lower-cased name with runs of `-`, `_` and `.` collapsed to a single `-`,
+        which is the only spelling a simple index is obliged to answer to.
+    """
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
@@ -49,7 +54,13 @@ def project_url(cfg: Config, project: str) -> str:
 
 
 def fetch(cfg: Config, project: str, *, auth: bool = True) -> tuple[Response, list[Link]]:
-    """Fetch a project's simple page and parse its distribution links."""
+    """Fetch a project's simple page and parse its distribution links.
+
+    Returns:
+        The raw response (so callers can judge a 404 for themselves) and the links it
+        advertises, each with the sha256 from its URL fragment where one is given. The
+        link list is empty for any status other than 200.
+    """
     url = project_url(cfg, project)
     resp = http(
         url,
@@ -71,7 +82,12 @@ def fetch(cfg: Config, project: str, *, auth: bool = True) -> tuple[Response, li
 
 
 def version_of(filename: str) -> str | None:
-    """Extract the version from a wheel or sdist filename."""
+    """Extract the version from a wheel or sdist filename.
+
+    Returns:
+        The version, or None if the filename is neither a wheel nor a recognised source
+        archive -- devpi also lists docs and toxresult files on some views.
+    """
     if filename.endswith(".whl"):
         parts = filename[: -len(".whl")].split("-")
         return parts[1] if parts[1:] else None
@@ -93,7 +109,14 @@ def versions(links: list[Link]) -> dict[str, list[Link]]:
 
 
 def version_key(version: str) -> tuple[tuple[int, ...], int, int]:
-    """Sort key approximating PEP 440 ordering (enough for test versions)."""
+    """Build a sort key approximating PEP 440 ordering.
+
+    Returns:
+        A key ordering releases correctly for the version shapes this harness produces:
+        the numeric release, then a stage rank putting dev/alpha/beta/rc before the
+        release and post after it, then that stage's serial. Not a full PEP 440
+        implementation -- it has no dependencies, which matters more here.
+    """
     match = re.match(r"\d+(?:\.\d+)*", version)
     release = tuple(int(p) for p in match.group(0).split(".")) if match else (0,)
     release = (*release, 0, 0, 0, 0)[:4]
@@ -122,7 +145,12 @@ def latest(version_list: Iterable[str]) -> str | None:
 
 
 def project_json(cfg: Config, project: str) -> Response:
-    """Devpi's JSON view of a project (requires devpi-web for the HTML one)."""
+    """Ask devpi for its JSON view of a project.
+
+    Returns:
+        The response. Its `result` maps each version to that release's metadata and
+        `+links`, which is where requires_dist is checked.
+    """
     return http(
         f"{cfg.index_url}/{normalize(project)}",
         accept="application/json",

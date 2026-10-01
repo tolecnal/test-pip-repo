@@ -24,7 +24,14 @@ def read() -> str:
 
 
 def write(version: str) -> str:
-    """Rewrite the version line in place, leaving the rest of the file untouched."""
+    """Rewrite the version line in place, leaving the rest of the file untouched.
+
+    Returns:
+        The version that was written, unchanged, so callers can chain on it.
+
+    Raises:
+        SystemExit: if pyproject.toml has no single unambiguous version line.
+    """
     validate(version)
     text = PYPROJECT.read_text(encoding="utf-8")
     new_text, count = _VERSION_LINE.subn(
@@ -44,7 +51,15 @@ def validate(version: str) -> str:
 
 
 def bump(part: str, current: str | None = None) -> str:
-    """Return `current` incremented by `part`. Does not write anything."""
+    """Work out the next version. Does not write anything.
+
+    Returns:
+        `current` (or the version in pyproject.toml) with `part` incremented.
+
+    Raises:
+        SystemExit: if `part` is not one of PART_NAMES, or the current version is not
+            major.minor.patch[.devN|.postN] and so cannot be incremented mechanically.
+    """
     if part not in PART_NAMES:
         raise SystemExit(f"cannot bump {part!r}; choose one of {', '.join(PART_NAMES)}")
     current = current or read()

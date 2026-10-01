@@ -98,25 +98,51 @@ class Context:
         Checks declaring needs_build/needs_upload are only reached once the runner has
         confirmed there is one, so this never raises for them; it keeps the invariant in
         one place instead of spreading `assert` over every check.
+
+        Returns:
+            The build this run is testing.
+
+        Raises:
+            Fail: if a check that did not declare needs_build/needs_upload reaches for
+                one anyway.
         """
         if self.record is None:
             raise Fail("nothing has been built yet -- run `pipcheck cycle`")
         return self.record
 
     def venv(self, name: str) -> envs.Venv:
-        """Create a venv for an install test, reusing it if a previous check made it."""
+        """Create a venv for an install test, reusing it if a previous check made it.
+
+        Returns:
+            The venv. It is torn down with the rest at the end of the run unless
+            --keep-venvs was given.
+        """
         if name not in self.venvs:
             self.venvs[name] = envs.create(self.cfg, f"test-{name}")
         return self.venvs[name]
 
     def pip_install(self, venv: envs.Venv, *specs: str, extra: tuple[str, ...] = ()) -> Proc:
-        """Install from the internal index only, with every cache bypassed."""
+        """Install from the internal index only, with every cache bypassed.
+
+        Returns:
+            The finished pip process. Caches are off so that a success proves the index
+            served the files, not that something was already lying around locally.
+        """
         return venv.pip(
             "install", "--no-cache-dir", *self.cfg.pip_index_args(), *extra, *specs, cfg=self.cfg
         )
 
     def provenance(self, venv: envs.Venv) -> dict[str, Any]:
-        """Ask the installed console script what it is."""
+        """Ask the installed package what it is.
+
+        Returns:
+            The build provenance the installed copy reports: its stamped version and
+            build id, the version in its metadata, and which dependencies resolved.
+
+        Raises:
+            Fail: if the installed copy cannot run or answers with something that is
+                not the expected JSON.
+        """
         proc = venv.run_python("-m", "devpi_smoke.cli", "--json", cfg=self.cfg)
         if not proc.ok:
             raise Fail(f"installed package could not report its build info:\n{proc.tail(15)}")
@@ -128,7 +154,16 @@ class Context:
     def assert_identity(
         self, venv: envs.Venv, version: str, build_id: str | None = None
     ) -> dict[str, Any]:
-        """Verify an installed copy really is the release we asked for."""
+        """Verify an installed copy really is the release we asked for.
+
+        Returns:
+            The provenance it reported, for a check to quote in its summary.
+
+        Raises:
+            Fail: if the stamped version, the metadata version or the build id disagree
+                with what was requested, or the declared dependency did not resolve --
+                each of which means the index served something other than this release.
+        """
         info = self.provenance(venv)
         problems = []
         if info.get("source_version") != version:
@@ -166,7 +201,15 @@ class Context:
 
 
 def _listed(ctx: Context) -> dict[str, list[simple.Link]]:
-    """Versions the index currently lists for our package, fetched at most once."""
+    """Read the versions the index currently lists for our package, fetched once a run.
+
+    Returns:
+        Each listed version mapped to its files, so checks can reason about history
+        without fetching the simple page again.
+
+    Raises:
+        Fail: if the simple page answers with anything but 200 or 404.
+    """
     if "versions" not in ctx.share:
         resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
         if resp.status not in {HTTPStatus.OK, HTTPStatus.NOT_FOUND}:
@@ -177,7 +220,14 @@ def _listed(ctx: Context) -> dict[str, list[simple.Link]]:
 
 
 def _volatile(ctx: Context) -> bool:
-    """Whether the target index allows releases to be replaced, fetched at most once."""
+    """Read whether the target index allows releases to be replaced, fetched once a run.
+
+    Returns:
+        True if the index is volatile, so a re-release of the same version replaces it.
+
+    Raises:
+        Fail: if the index's JSON view cannot be read.
+    """
     if "volatile" not in ctx.share:
         resp = ctx.get(ctx.cfg.index_url, accept="application/json")
         if resp.status != HTTPStatus.OK:
@@ -303,7 +353,15 @@ def release_listed(ctx: Context) -> str:
 @check("name_normalisation", "publish", "the index honours PEP 503 name normalisation",
        needs_upload=True)
 def name_normalisation(ctx: Context) -> str:
-    """`devpi_smoke`, `DevPI.Smoke` and `devpi-smoke` must all resolve."""
+    """Ask for the project under every spelling PEP 503 says must work.
+
+    Returns:
+        The status each spelling answered with.
+
+    Raises:
+        Fail: if any spelling is neither served nor redirected, because pip would then
+            fail to find the package for some of the ways people write its name.
+    """
     base = ctx.cfg.simple_url.rstrip("/")
     variants = {"devpi_smoke", "DevPI.Smoke", simple.normalize(ctx.cfg.package)}
     statuses = {}
@@ -568,6 +626,14 @@ def overwrite_protection(ctx: Context) -> str:
     rebuilds the same version with a fresh build id -- same filenames, different
     content -- which is what an accidental re-release looks like. A non-volatile index
     must refuse it; a volatile one must apply it completely, not partially.
+
+    Returns:
+        What the index did, and on what basis that was expected.
+
+    Raises:
+        Fail: if a published release was replaced where immutability was expected, if a
+            refused upload changed the release anyway, or if an accepted replacement was
+            only partially applied -- a stale cache still serving the old bytes.
     """
     expect = ctx.cfg.expect_overwrite_rejected
     if isinstance(expect, str):
@@ -636,6 +702,9 @@ def _first_error(proc: Proc) -> str:
 
     twine --verbose ends with `ERROR HTTPError: <status> from <url>`; prefer that over
     the response body it also echoes.
+
+    Returns:
+        One line, stripped of colour and collapsed to fit a report.
     """
     lines = [
         re.sub(r"^(ERROR|WARNING|INFO)\s+", "", raw.strip())
@@ -655,6 +724,14 @@ def upload_requires_auth(ctx: Context) -> str:
 
     A fresh project name means a rejection cannot be mistaken for "that version
     already exists", and an unexpected success cannot clobber a real release.
+
+    Returns:
+        How the upload was refused.
+
+    Raises:
+        Fail: if the index accepted it, which means anonymous upload is open; the
+            message names the stray project to remove.
+        Skip: if the configuration says not to expect authenticated uploads.
     """
     if not ctx.cfg.expect_upload_auth:
         raise Skip("expect_upload_auth is disabled in config")
@@ -679,7 +756,16 @@ def upload_requires_auth(ctx: Context) -> str:
 
 @check("web_search", "web", "devpi-web search finds the uploaded release", needs_upload=True)
 def web_search(ctx: Context) -> str:
-    """devpi-web indexes asynchronously, so poll for up to search_wait seconds."""
+    """Search for the release through devpi-web.
+
+    Returns:
+        How many attempts it took to appear; devpi-web indexes asynchronously, so this
+        polls for up to search_wait seconds.
+
+    Raises:
+        Fail: if the release never appears, which means the indexer is stale or stopped.
+        Skip: if the server has no /+search endpoint at all.
+    """
     query = urllib.parse.urlencode({"query": ctx.cfg.package})
     url = f"{ctx.cfg.base}/+search?{query}"
     deadline = time.monotonic() + max(0, ctx.cfg.search_wait)

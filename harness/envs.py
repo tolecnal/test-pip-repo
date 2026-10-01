@@ -46,7 +46,17 @@ class Venv:
 
 
 def create(cfg: Config, name: str, *, with_pip: bool = True) -> Venv:
-    """Create (or recreate) a venv under .venvs/<name>."""
+    """Create (or recreate) a venv under .venvs/<name>.
+
+    Returns:
+        The new venv. Any existing one at that path is removed first, so each install
+        test starts from nothing.
+
+    Raises:
+        RuntimeError: if the interpreter cannot build a venv -- on Debian and Ubuntu
+            that usually means the python3-venv package is missing, which the message
+            says.
+    """
     path = VENV_DIR / name
     if path.exists():
         shutil.rmtree(path)
@@ -76,6 +86,14 @@ def tooling(cfg: Config, *, rebuild: bool = False, via_index: bool = False,
     the harness from running. On a machine with no PyPI access -- common for a host
     that only talks to the internal mirror -- it falls back to installing through the
     internal index, and says so. `via_index=True` goes straight there.
+
+    Returns:
+        The tooling venv, with `source` naming where its packages came from. An existing
+        one is reused unless `rebuild` is set.
+
+    Raises:
+        RuntimeError: if neither PyPI nor the internal index can provide build and
+            twine, with both failures quoted.
     """
     venv = Venv(VENV_DIR / "tooling")
     if not rebuild and venv.python.exists() and venv.has("twine"):

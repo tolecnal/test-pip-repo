@@ -400,11 +400,9 @@ rather than arguing about line length:
   clean. The `ignore` list is short and each entry says why: printing is this tool's
   interface (`T201`); its long, specific error messages are the product, not a smell
   (`TRY003`, `EM101`, `EM102`); docstrings are required on modules and classes but not on
-  every one-line helper (`D102`, `D103`, …); `Fail`/`Skip` read as check outcomes rather
-  than as `FailError` (`N818`); and the preview pydoclint rules (`DOC201`, `DOC501`)
-  mandate Google-style `Returns:`/`Raises:` sections, which these prose docstrings do not
-  use — flip them on if you want sectioned docstrings, it is ~70 docstrings of work.
-  Tests additionally allow `assert` and local imports.
+  every one-line helper (`D102`, `D103`, …); and `Fail`/`Skip` read as check outcomes
+  rather than as `FailError` (`N818`). Tests additionally allow `assert` and local
+  imports.
 
   Suppressions use Ruff's own directive with rule *names*, which is what preview asks for
   and reads better than a code: `# ruff: ignore[blind-except] -- a harness bug must not
@@ -441,7 +439,32 @@ Neither pipeline runs the devpi suite. That is on purpose: `cycle` needs a reach
 devpi server and it publishes real releases to an index, so it stays a thing you run by
 hand from a clone.
 
-Two conventions worth keeping if you extend the suite:
+### Docstrings
+
+pydoclint is enabled (`DOC201`, `DOC501`, `DOC502`), so a docstring on a function that
+returns something documents what comes back, and one on a function that raises documents
+what it raises — and *only* what it actually raises:
+
+```python
+def upload(cfg: Config, st: state.State, build_record: state.Build | None = None) -> Proc:
+    """Upload the recorded build's artifacts with twine.
+
+    Returns:
+        The finished twine process. On success the build is marked uploaded in state,
+        against the index it went to.
+
+    Raises:
+        RuntimeError: if nothing has been built, if no credentials are configured, or
+            if the recorded artifacts are no longer on disk.
+    """
+```
+
+Google-style sections, prose above them for the *why*. `Args:` is not required and is
+mostly omitted — the signatures are typed and the names say enough. A check function
+needs no docstring at all (its `description=` is its summary); if you give it one,
+document the `Fail`/`Skip` it raises, since that is the contract a reader cares about.
+
+Two more conventions worth keeping if you extend the suite:
 
 - A new check is one function with `@check(name, phase, description, ...)`, returning a
   one-line summary on success and raising `Fail` (the repository misbehaved) or `Skip`

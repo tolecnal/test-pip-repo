@@ -27,7 +27,11 @@ __version__ = VERSION
 
 
 def hello(who: str = "world") -> str:
-    """Return the canonical greeting."""
+    """Greet someone.
+
+    Returns:
+        The greeting, naming this package's version and build id.
+    """
     return f"hello, {who}! (devpi-smoke {VERSION} build {BUILD_ID})"
 
 
@@ -37,10 +41,12 @@ def build_info() -> dict[str, Any]:
     Importing six at module scope is deliberate: it is a declared dependency, so a
     missing one should fail loudly at import rather than quietly here.
 
-    `source_version` comes from the stamped module inside the wheel/sdist;
-    `dist_version` comes from the installed distribution's metadata. They must agree
-    -- a mismatch means the index served an artifact whose filename lies about its
-    contents.
+    Returns:
+        The build's provenance. `source_version` comes from the stamped module inside
+        the wheel/sdist and `dist_version` from the installed distribution's metadata;
+        they must agree, because a mismatch means the index served an artifact whose
+        filename lies about its contents. `six_version` proves the declared dependency
+        resolved, and `extra_idna` is set only when the optional extra is installed.
     """
     info = {
         "source_version": VERSION,

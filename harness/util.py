@@ -85,7 +85,13 @@ def run(
     timeout: int = 1800,
     verbose: bool = False,
 ) -> Proc:
-    """Run a command, capturing stdout+stderr together. Never raises on failure."""
+    """Run a command, capturing stdout+stderr together.
+
+    Returns:
+        The finished process. A failure -- including a missing executable or a timeout --
+        comes back as a non-zero `returncode` with the reason in `output`, because the
+        caller decides what a failure means here.
+    """
     full_env = dict(os.environ)
     if env:
         full_env.update(env)
@@ -140,7 +146,14 @@ class Response:
         return self.body.decode("utf-8", "replace")
 
     def json(self) -> Any:  # ruff: ignore[any-type]  -- JSON is Any by nature
-        """Parse the body as JSON. Raises if it is not JSON."""
+        """Parse the body as JSON.
+
+        Nothing is caught: devpi answering with HTML where JSON was asked for is a real
+        failure, and json.loads raising is how the caller finds out.
+
+        Returns:
+            Whatever the body decodes to, or None for an empty body.
+        """
         return json.loads(self.body or b"null")
 
 
@@ -153,7 +166,17 @@ def http(
     timeout: int = 30,
     verify_tls: bool = True,
 ) -> Response:
-    """Fetch a URL. HTTP error statuses are returned, not raised."""
+    """Fetch a URL.
+
+    Returns:
+        The response, including error statuses: a 404 or 401 is data a check reasons
+        about, not an exception.
+
+    Raises:
+        ValueError: if the URL is not http(s), so a `file:` scheme in a config file
+            cannot turn a repository check into a local file read.
+        ConnectionError: if the server could not be reached at all, or timed out.
+    """
     # Only ever speak HTTP(S): a `file:` or custom scheme in a config file must not
     # turn a repository check into a local file read.
     if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
@@ -198,7 +221,11 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 def strip_ansi(text: str) -> str:
-    """Remove terminal escape sequences from captured output (twine is colourful)."""
+    """Remove terminal escape sequences from captured output (twine is colourful).
+
+    Returns:
+        The text with ANSI sequences stripped, safe to match on and to put in a report.
+    """
     return _ANSI.sub("", text)
 
 

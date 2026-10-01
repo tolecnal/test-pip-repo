@@ -69,7 +69,11 @@ class Config:
 
     @classmethod
     def build(cls, data: dict[str, Any], sources: list[str]) -> Config:
-        """Construct from already-validated key/values, remembering where they came from."""
+        """Construct from already-validated key/values.
+
+        Returns:
+            The config, remembering which files it came from so `show` can report them.
+        """
         cfg = cls(**data)
         cfg._sources = list(sources)
         return cfg
@@ -109,7 +113,13 @@ class Config:
         return self.python or sys.executable
 
     def pip_index_args(self) -> list[str]:
-        """Index arguments forcing pip to use *only* the internal repository."""
+        """Build the pip arguments that pin resolution to the internal repository.
+
+        Returns:
+            `--index-url` for the index, plus `--trusted-host` when the index is plain
+            HTTP or TLS verification is off. No extra-index: anything pip cannot find
+            here is a finding, not something to fetch from PyPI behind our back.
+        """
         args = ["--index-url", self.simple_url]
         host = self.simple_url.split("//", 1)[-1].split("/", 1)[0]
         if self.simple_url.startswith("http://") or not self.verify_tls:
@@ -122,7 +132,16 @@ class Config:
 
 
 def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Config:
-    """Build a Config from file(s), then environment, then explicit overrides."""
+    """Build a Config from file(s), then environment, then explicit overrides.
+
+    Returns:
+        The resolved config, with the files it was read from recorded on it.
+
+    Raises:
+        SystemExit: if an explicitly requested config file is missing, if a file sets a
+            key that does not exist, or if the resulting url has no http(s) scheme --
+            all operator mistakes worth stopping for before anything else runs.
+    """
     data: dict[str, Any] = {}
     sources: list[str] = []
     files = [Path(path)] if path else [CONFIG_FILE, LOCAL_CONFIG_FILE]

@@ -29,12 +29,6 @@ ignore = [
   "CPY001",
   # `Fail` and `Skip` read as check outcomes in the check DSL, not as "FailError".
   "N818",
-  # Preview, pydoclint: these mandate Google-style "Returns:" and "Raises:" sections in
-  # every docstring. The docstrings here are prose in the pep257 style -- the first line
-  # already says what comes back, and raising `Fail`/`Skip` is the documented contract of
-  # every check. Sections would restate both at length. Flip these on if the project
-  # ever adopts sectioned docstrings; it is ~70 docstrings of work.
-  "DOC201", "DOC501",
   # Running pip, twine and devpi *is* the job. The individual call sites carry their own
   # reviewed suppressions; flagging the import adds nothing.
   "S404",
@@ -60,3 +54,9 @@ max-args = 8
 
 [lint.pydocstyle]
 convention = "pep257"
+
+[lint.pydoclint]
+# Returns:/Raises: sections are required where they apply (DOC201/DOC501) and must not
+# claim exceptions the function does not raise (DOC502). Args: is not required: the
+# signatures are typed, and repeating them would go stale.
+ignore-one-line-docstrings = false

@@ -46,11 +46,14 @@ def reset_stamp() -> None:
 
 
 def stamp(version: str, build_id: str | None = None) -> tuple[str, str]:
-    """Write _build_info.py for this build. Returns (build_id, built_at).
+    """Write _build_info.py for this build.
 
     The build id is fresh random hex on every build, which is what makes a stale
     artifact detectable: the version alone cannot distinguish "the release I just
     uploaded" from "a cached release that happens to share its number".
+
+    Returns:
+        The build id and the UTC timestamp that were stamped in.
     """
     build_id = build_id or secrets.token_hex(6)
     built_at = _now()
@@ -62,7 +65,17 @@ def stamp(version: str, build_id: str | None = None) -> tuple[str, str]:
 
 
 def _compile(cfg: Config, outdir: Path, version: str, build_id: str, built_at: str) -> state.Build:
-    """Run `python -m build` into outdir and describe the result."""
+    """Run `python -m build` into outdir and describe the result.
+
+    Returns:
+        An unrecorded Build describing the artifacts, with a sha256 for each, so a
+        caller can compare them against whatever the index later serves.
+
+    Raises:
+        RuntimeError: if the build fails, or produces anything other than both a wheel
+            and an sdist -- publishing only one of the two would quietly narrow what
+            the install checks can prove.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     # setuptools reuses stale build/ trees; drop it so the stamp cannot be cached.
     shutil.rmtree(PKG_DIR / "build", ignore_errors=True)
@@ -94,7 +107,11 @@ def _compile(cfg: Config, outdir: Path, version: str, build_id: str, built_at: s
 
 
 def build(cfg: Config, st: state.State, *, clean: bool = True) -> state.Build:
-    """Stamp and build an sdist + wheel for the current pyproject version."""
+    """Stamp and build an sdist + wheel for the current pyproject version.
+
+    Returns:
+        The build, recorded in state as the one now under test.
+    """
     version = versioning.read()
     build_id, built_at = stamp(version)
     if clean and DIST_DIR.exists():
@@ -107,6 +124,10 @@ def preserved_source() -> Generator[None]:
     """Leave pyproject's version and the build stamp exactly as they were.
 
     Lets a check build something without disturbing the working tree.
+
+    Yields:
+        Nothing; the version and stamp are restored when the block exits, whether it
+        succeeded or raised.
     """
     version = versioning.read()
     snapshot = BUILD_INFO.read_text(encoding="utf-8") if BUILD_INFO.exists() else None
@@ -129,6 +150,9 @@ def build_variant(cfg: Config, outdir: Path, version: str | None = None) -> stat
     actually under test, which is not necessarily what pyproject.toml currently says
     (a later `cycle` may have moved it on). Not recorded in state; wrap the call in
     `preserved_source()` to keep the working tree unchanged.
+
+    Returns:
+        The variant build: same filenames as the original, different bytes.
     """
     if version and version != versioning.read():
         versioning.write(version)
@@ -142,6 +166,9 @@ def adopt_variant(st: state.State, variant: state.Build) -> state.Build:
 
     Only called once the variant has been uploaded successfully, so it inherits the
     uploaded flag -- otherwise later checks would think nothing is published.
+
+    Returns:
+        The variant, now recorded in state as the build under test.
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     moved = []
@@ -155,7 +182,16 @@ def adopt_variant(st: state.State, variant: state.Build) -> state.Build:
 
 
 def upload(cfg: Config, st: state.State, build_record: state.Build | None = None) -> Proc:
-    """Upload the recorded build's artifacts with twine."""
+    """Upload the recorded build's artifacts with twine.
+
+    Returns:
+        The finished twine process. On success the build is marked uploaded in state,
+        against the index it went to.
+
+    Raises:
+        RuntimeError: if nothing has been built, if no credentials are configured, or
+            if the recorded artifacts are no longer on disk.
+    """
     record = build_record or st.last
     if record is None:
         raise RuntimeError("nothing has been built yet -- run `pipcheck build` first")
@@ -190,7 +226,11 @@ def _twine(cfg: Config, files: list[str], user: str, password: str) -> Proc:
 
 
 def upload_as(cfg: Config, files: list[str], user: str, password: str) -> Proc:
-    """Upload with explicit (possibly bogus) credentials -- used by the auth check."""
+    """Upload with explicit (possibly bogus) credentials -- used by the auth check.
+
+    Returns:
+        The finished twine process, whose failure is the interesting outcome here.
+    """
     return _twine(cfg, files, user, password)
 
 
@@ -200,6 +240,10 @@ def make_probe_sdist(dest_dir: Path) -> tuple[str, Path]:
     Used to test that unauthenticated upload is refused. A fresh project name means
     a rejection cannot be confused with "this version already exists", and a
     success cannot clobber a real release.
+
+    Returns:
+        The randomised project name and the path to the archive, so a check that gets
+        an unexpected success can name what it left behind.
     """
     name = f"pipcheck-authprobe-{secrets.token_hex(4)}"
     version = "0.0.1"

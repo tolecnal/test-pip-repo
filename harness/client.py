@@ -14,7 +14,11 @@ CLIENT_DIR = VENV_DIR / "devpi-clientdir"  # never touch the user's ~/.devpi
 
 
 def available(cfg: Config) -> bool:
-    """Whether the optional devpi client is installed in the tooling venv."""
+    """Report whether the optional devpi client is available.
+
+    Returns:
+        True if `devpi` is installed in the tooling venv, so the admin commands work.
+    """
     return envs.tooling(cfg).has("devpi")
 
 
@@ -41,7 +45,11 @@ def login(cfg: Config) -> Proc:
 
 
 def remove(cfg: Config, spec: str) -> Proc:
-    """Delete a release (`name==version`) or a whole project from the index."""
+    """Delete a release (`name==version`) or a whole project from the index.
+
+    Returns:
+        The finished `devpi remove` process -- or the failed login that stopped it.
+    """
     logged_in = login(cfg)
     if not logged_in.ok:
         return logged_in

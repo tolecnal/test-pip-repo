@@ -226,7 +226,15 @@ def cmd_bootstrap(args: argparse.Namespace, cfg: config.Config) -> int:
 
 
 def _resolve_report(value: str) -> Path:
-    """Accept a path, or a bare filename inside reports/."""
+    """Resolve a report named on the command line.
+
+    Returns:
+        The path to the report, accepting a full path, a bare filename inside reports/,
+        or that filename without its .json suffix.
+
+    Raises:
+        SystemExit: if no report matches, rather than silently comparing the wrong pair.
+    """
     candidates = [Path(value), REPORT_DIR / value]
     if not value.endswith(".json"):
         candidates.append(REPORT_DIR / f"{value}.json")
@@ -237,7 +245,11 @@ def _resolve_report(value: str) -> Path:
 
 
 def _check_names(path: Path) -> frozenset[str]:
-    """Return the set of checks a saved report covers."""
+    """Read which checks a saved report covers.
+
+    Returns:
+        The set of check names in that report, used to pair runs of the same scope.
+    """
     return frozenset(
         r.get("name") for r in json.loads(path.read_text(encoding="utf-8")).get("results", [])
     )
@@ -391,7 +403,15 @@ def cmd_verify(args: argparse.Namespace, cfg: config.Config, st: state.State) ->
 
 
 def _dispatch(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
-    """Run the requested command. Every handler returns a process exit code."""
+    """Run the requested command.
+
+    Returns:
+        The command's process exit code.
+
+    Raises:
+        SystemExit: if the parser accepted a command this table does not handle, which
+            would be a bug here rather than operator error.
+    """
     handlers: dict[str, Callable[[], int]] = {
         "show": lambda: cmd_show(cfg, st),
         "clean": lambda: cmd_clean(args),

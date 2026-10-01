@@ -71,7 +71,16 @@ def select(
     skip: list[str] | None = None,
     phases: list[str] | None = None,
 ) -> list[checks.CheckDef]:
-    """Pick checks by name and/or phase, preserving phase then registration order."""
+    """Pick checks by name and/or phase.
+
+    Returns:
+        The selected checks in phase order, and within a phase in registration order,
+        which is the order they depend on each other for shared state.
+
+    Raises:
+        SystemExit: if a name or phase does not exist, listing what does -- a typo must
+            not quietly run a smaller suite than asked for.
+    """
     known = {c.name for c in checks.REGISTRY}
     for name in (only or []) + (skip or []):
         if name not in known:
@@ -98,7 +107,11 @@ def run(
     record: state.Build | None = None,
     json_out: str | None = None,
 ) -> Report:
-    """Execute the selected checks against the repository and print as we go."""
+    """Execute the selected checks against the repository, printing as it goes.
+
+    Returns:
+        The finished report, also saved to reports/ for `compare` to pick up.
+    """
     # Without an explicit build, verify the most recent one published to *this* index,
     # so alternating between a dev and a release index does the obvious thing.
     if record is None:
@@ -165,7 +178,11 @@ def run(
 
 
 def saved_reports() -> list[Path]:
-    """Every saved report, oldest first."""
+    """List the saved reports.
+
+    Returns:
+        Every report file in reports/, oldest first, or an empty list if none exist yet.
+    """
     if not REPORT_DIR.is_dir():
         return []
     return sorted(REPORT_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
@@ -216,7 +233,13 @@ class Delta:
 
 
 def _delta(old: dict[str, Any], new: dict[str, Any]) -> Delta:
-    """Sort every check in the later run into what happened to it."""
+    """Sort every check in the later run into what happened to it.
+
+    Returns:
+        The movement between the two runs: what regressed, what was fixed, what was
+        already failing, what stopped running, what is new, and what the earlier run
+        covered that the later one did not.
+    """
     bad = (FAIL, ERROR)
     delta = Delta(
         missing=[name for name in old if name not in new],
@@ -238,7 +261,12 @@ def _delta(old: dict[str, Any], new: dict[str, Any]) -> Delta:
 
 
 def compare(before_path: Path, after_path: Path) -> int:
-    """Diff two runs. Returns a process exit code: 1 if anything regressed."""
+    """Diff two runs and print what moved.
+
+    Returns:
+        A process exit code: 1 if anything regressed, 0 otherwise. Checks that were
+        already failing before the change do not count as regressions.
+    """
     before, after = _load(before_path), _load(after_path)
     delta = _delta(
         {r["name"]: r for r in before.get("results", [])},
@@ -342,7 +370,11 @@ def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None =
 
 
 def _prerequisite(ctx: Context, definition: checks.CheckDef) -> str | None:
-    """Why this check cannot run, if it cannot."""
+    """Decide whether a check can run at all.
+
+    Returns:
+        The reason it cannot run, to be reported as a skip, or None if it can.
+    """
     if definition.needs_auth and not ctx.cfg.user:
         return "no credentials configured"
     if definition.needs_build or definition.needs_upload:
