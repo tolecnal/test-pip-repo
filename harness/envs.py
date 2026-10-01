@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .config import VENV_DIR, Config
 from .util import Proc, run, yellow
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TOOLING = ("build", "twine")
 TOOLING_OPTIONAL = ("devpi-client",)
@@ -15,6 +18,8 @@ TOOLING_OPTIONAL = ("devpi-client",)
 
 @dataclass
 class Venv:
+    """A virtualenv on disk, with the handful of operations the harness needs."""
+
     path: Path
     source: str = ""  # where its packages came from, for the bootstrap message
 

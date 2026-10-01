@@ -1,0 +1,49 @@
+# Lint settings for this repo. `make lint` uses them, and an editor's Ruff LSP picks
+# this file up too, so the editor and the command line agree.
+#
+# NOTE: target-version describes the *harness*, which requires 3.11+ (it reads TOML
+# with tomllib). The test package in pkg/ declares requires-python >=3.9, so keep its
+# code free of 3.10+ runtime idioms even when Ruff would allow them here.
+
+target-version = "py311"
+line-length = 100
+src = ["harness", "pkg/src"]
+extend-exclude = [".venvs", "dist", "build"]
+
+[lint]
+select = ["ALL"]
+ignore = [
+  # This is a terminal program: printing *is* its user interface.
+  "T201",
+  # Long, specific messages are the product here -- they are what an operator reads
+  # when a check fails. Hoisting every one into a variable or an exception subclass
+  # would hurt the thing we care most about.
+  "TRY003", "EM101", "EM102",
+  # Docstrings: modules, classes and anything non-obvious are documented. Requiring one
+  # on every small helper and every test only invites noise.
+  "D102", "D103", "D104", "D105", "D106", "D107",
+  # Ruff documents COM812 as conflicting with formatter-style wrapping.
+  "COM812",
+  # Internal repo; no per-file copyright headers.
+  "CPY001",
+  # `Fail` and `Skip` read as check outcomes in the check DSL, not as "FailError".
+  "N818",
+]
+
+[lint.per-file-ignores]
+# Tests: asserts are the point, pytest discovers them without a package, and the local
+# imports inside tests are deliberate (they are what is under test).
+"pkg/tests/*" = ["S101", "INP001", "PLC0415"]
+# Generated at build time by `pipcheck build`.
+"pkg/src/devpi_smoke/_build_info.py" = ["ALL"]
+
+[lint.isort]
+known-first-party = ["harness", "devpi_smoke"]
+
+[lint.pylint]
+# `check(...)` takes its flags as keyword-only arguments; that reads better than a
+# config object for a declarative decorator.
+max-args = 8
+
+[lint.pydocstyle]
+convention = "pep257"

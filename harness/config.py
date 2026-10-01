@@ -33,6 +33,8 @@ ENV_MAP = {
 
 @dataclass
 class Config:
+    """Where the repository is, how to authenticate, and what to expect of it."""
+
     # --- connection
     url: str = "http://localhost:3141"
     index: str = "testing/dev"  # "<user>/<index>" on the devpi server
@@ -66,7 +68,7 @@ class Config:
         return list(self._sources)
 
     @classmethod
-    def build(cls, data: dict[str, Any], sources: list[str]) -> "Config":
+    def build(cls, data: dict[str, Any], sources: list[str]) -> Config:
         """Construct from already-validated key/values, remembering where they came from."""
         cfg = cls(**data)
         cfg._sources = list(sources)
@@ -126,20 +128,20 @@ def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Co
     files = [Path(path)] if path else [CONFIG_FILE, LOCAL_CONFIG_FILE]
     for candidate in files:
         if candidate.is_file():
-            with open(candidate, "rb") as handle:
+            with candidate.open("rb") as handle:
                 loaded = tomllib.load(handle)
             data.update(loaded.get("repo", loaded))
             sources.append(str(candidate))
         elif path:
             raise SystemExit(f"config file not found: {candidate}")
 
-    for env_key, field_name in ENV_MAP.items():
-        if os.environ.get(env_key):
-            data[field_name] = os.environ[env_key]
+    data.update({
+        field_name: os.environ[env_key]
+        for env_key, field_name in ENV_MAP.items()
+        if os.environ.get(env_key)
+    })
 
-    for key, value in (overrides or {}).items():
-        if value is not None:
-            data[key] = value
+    data.update({key: value for key, value in (overrides or {}).items() if value is not None})
 
     known = {f.name for f in Config.__dataclass_fields__.values() if not f.name.startswith("_")}
     unknown = set(data) - known
@@ -148,4 +150,12 @@ def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Co
             f"unknown config key(s): {', '.join(sorted(unknown))}\n"
             f"valid keys: {', '.join(sorted(known))}"
         )
-    return Config.build(data, sources)
+    cfg = Config.build(data, sources)
+    # Catch the commonest config slip (a missing scheme) here, where the message can
+    # name the key, rather than deep inside the first check that tries to fetch.
+    if urllib.parse.urlsplit(cfg.base).scheme not in ("http", "https"):
+        raise SystemExit(
+            f"url must start with http:// or https:// (got {cfg.url!r})\n"
+            "set it in pipcheck.toml, or via DEVPI_URL / --url"
+        )
+    return cfg

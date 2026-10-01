@@ -6,7 +6,7 @@
 #   make test BUMP=minor      same, with a minor bump
 #   make verify               re-run the suite against the last build
 #   make compare              diff the two most recent runs (the upgrade check)
-#   make lint                 isort --check-only + pyright
+#   make lint                 ruff + isort --check-only + pyright
 #   make format               apply isort
 #   make release VERSION=2.0.0
 #   make clean
@@ -80,8 +80,10 @@ $(LINT)/bin/pyright: requirements-dev.txt
 	@touch $@
 
 lint: $(LINT)/bin/pyright
+	$(LINT)/bin/ruff check $(SOURCES)
 	$(LINT)/bin/isort --check-only --diff $(SOURCES)
 	$(LINT)/bin/pyright
 
 format: $(LINT)/bin/pyright
+	$(LINT)/bin/ruff check --fix $(SOURCES)
 	$(LINT)/bin/isort $(SOURCES)

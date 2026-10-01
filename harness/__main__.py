@@ -7,12 +7,19 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__, builder, checks, client, config, envs, runner, state, versioning
 from .config import DIST_DIR, REPORT_DIR, STATE_FILE, VENV_DIR
 from .util import bold, dim, green, red, yellow
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 EXIT_OK, EXIT_FAILED, EXIT_SETUP = 0, 1, 2
+
+# `compare` needs a run on each side of the change.
+_RUNS_TO_COMPARE = 2
 
 
 # ------------------------------------------------------------------------ parser
@@ -187,7 +194,7 @@ def cmd_list() -> int:
     return EXIT_OK
 
 
-def cmd_clean(args: argparse.Namespace, cfg: config.Config) -> int:
+def cmd_clean(args: argparse.Namespace) -> int:
     targets = [DIST_DIR, STATE_FILE, config.PKG_DIR / "build"]
     targets += list(VENV_DIR.glob("test-*"))
     targets += list(config.PKG_DIR.glob("src/*.egg-info"))
@@ -229,7 +236,7 @@ def _resolve_report(value: str) -> Path:
 
 
 def _check_names(path: Path) -> frozenset[str]:
-    """The set of checks a saved report covers."""
+    """Return the set of checks a saved report covers."""
     return frozenset(
         r.get("name") for r in json.loads(path.read_text()).get("results", [])
     )
@@ -237,7 +244,7 @@ def _check_names(path: Path) -> frozenset[str]:
 
 def cmd_compare(args: argparse.Namespace) -> int:
     saved = runner.saved_reports()
-    if args.list_reports or (not args.before and len(saved) < 2):
+    if args.list_reports or (not args.before and len(saved) < _RUNS_TO_COMPARE):
         if not saved:
             print("no saved runs yet -- every `pipcheck cycle`/`verify` saves one into reports/")
             return EXIT_OK if args.list_reports else EXIT_SETUP
@@ -344,8 +351,68 @@ def cmd_cycle(args: argparse.Namespace, cfg: config.Config, st: state.State) -> 
     return EXIT_OK if report.ok else EXIT_FAILED
 
 
+def cmd_bump(args: argparse.Namespace) -> int:
+    print(versioning.write(versioning.bump(args.part)))
+    return EXIT_OK
+
+
+def cmd_set_version(args: argparse.Namespace) -> int:
+    print(versioning.write(args.value))
+    return EXIT_OK
+
+
+def cmd_build(cfg: config.Config, st: state.State) -> int:
+    record = builder.build(cfg, st)
+    print(green(f"built {record.version} (build {record.build_id}) into {DIST_DIR}"))
+    return EXIT_OK
+
+
+def cmd_upload(cfg: config.Config, st: state.State) -> int:
+    record = st.last
+    if record is None:
+        raise RuntimeError("nothing has been built yet -- run `pipcheck build` first")
+    proc = builder.upload(cfg, st, record)
+    print(proc.tail(20))
+    if not proc.ok:
+        return EXIT_FAILED
+    print(green(f"uploaded {record.version} to {cfg.index_url}"))
+    return EXIT_OK
+
+
+def cmd_doctor(cfg: config.Config, st: state.State) -> int:
+    report = runner.run(cfg, st, runner.select(phases=["server"]))
+    return EXIT_OK if report.ok else EXIT_FAILED
+
+
+def cmd_verify(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
+    report = runner.run(cfg, st, runner.select(**selection(args)), json_out=args.json_out)
+    return EXIT_OK if report.ok else EXIT_FAILED
+
+
+def _dispatch(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
+    """Run the requested command. Every handler returns a process exit code."""
+    handlers: dict[str, Callable[[], int]] = {
+        "show": lambda: cmd_show(cfg, st),
+        "clean": lambda: cmd_clean(args),
+        "bootstrap": lambda: cmd_bootstrap(args, cfg),
+        "remove": lambda: cmd_remove(args, cfg, st),
+        "bump": lambda: cmd_bump(args),
+        "set-version": lambda: cmd_set_version(args),
+        "build": lambda: cmd_build(cfg, st),
+        "upload": lambda: cmd_upload(cfg, st),
+        "doctor": lambda: cmd_doctor(cfg, st),
+        "verify": lambda: cmd_verify(args, cfg, st),
+        "cycle": lambda: cmd_cycle(args, cfg, st),
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        raise SystemExit(f"unhandled command {args.command!r}")
+    return handler()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # These two need neither a server nor a config file.
     if args.command == "list":
         return cmd_list()
     if args.command == "compare":
@@ -353,55 +420,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args)
     st = state.load()
-
     try:
-        if args.command == "show":
-            return cmd_show(cfg, st)
-        if args.command == "clean":
-            return cmd_clean(args, cfg)
-        if args.command == "bootstrap":
-            return cmd_bootstrap(args, cfg)
-        if args.command == "remove":
-            return cmd_remove(args, cfg, st)
-
-        if args.command == "bump":
-            print(versioning.write(versioning.bump(args.part)))
-            return EXIT_OK
-        if args.command == "set-version":
-            print(versioning.write(args.value))
-            return EXIT_OK
-
-        if args.command == "build":
-            record = builder.build(cfg, st)
-            print(green(f"built {record.version} (build {record.build_id}) into {DIST_DIR}"))
-            return EXIT_OK
-        if args.command == "upload":
-            record = st.last
-            if record is None:
-                raise RuntimeError("nothing has been built yet -- run `pipcheck build` first")
-            proc = builder.upload(cfg, st, record)
-            print(proc.tail(20))
-            if not proc.ok:
-                return EXIT_FAILED
-            print(green(f"uploaded {record.version} to {cfg.index_url}"))
-            return EXIT_OK
-
-        if args.command == "doctor":
-            report = runner.run(cfg, st, runner.select(phases=["server"]))
-            return EXIT_OK if report.ok else EXIT_FAILED
-        if args.command == "verify":
-            report = runner.run(cfg, st, runner.select(**selection(args)),
-                                json_out=args.json_out)
-            return EXIT_OK if report.ok else EXIT_FAILED
-        if args.command == "cycle":
-            return cmd_cycle(args, cfg, st)
+        return _dispatch(args, cfg, st)
     except RuntimeError as exc:
         print(red(f"error: {exc}"), file=sys.stderr)
         return EXIT_SETUP
     except KeyboardInterrupt:
         return 130
-
-    raise SystemExit(f"unhandled command {args.command!r}")
 
 
 if __name__ == "__main__":

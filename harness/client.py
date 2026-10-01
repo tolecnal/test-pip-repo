@@ -6,6 +6,7 @@ twine, so a missing devpi-client only disables the admin conveniences.
 
 from __future__ import annotations
 
+from . import envs
 from .config import VENV_DIR, Config
 from .util import Proc, run
 
@@ -13,14 +14,11 @@ CLIENT_DIR = VENV_DIR / "devpi-clientdir"  # never touch the user's ~/.devpi
 
 
 def available(cfg: Config) -> bool:
-    from . import envs
-
+    """Whether the optional devpi client is installed in the tooling venv."""
     return envs.tooling(cfg).has("devpi")
 
 
 def _devpi(cfg: Config, *args: str) -> Proc:
-    from . import envs
-
     tool = envs.tooling(cfg)
     if not tool.has("devpi"):
         raise RuntimeError(

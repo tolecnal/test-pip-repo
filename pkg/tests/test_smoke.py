@@ -13,33 +13,33 @@ import sys
 import devpi_smoke
 
 
-def test_hello_mentions_version():
+def test_hello_mentions_version() -> None:
     greeting = devpi_smoke.hello()
     assert greeting.startswith("hello, world!")
     assert devpi_smoke.__version__ in greeting
 
 
-def test_hello_takes_a_name():
+def test_hello_takes_a_name() -> None:
     assert devpi_smoke.hello("devpi").startswith("hello, devpi!")
 
 
-def test_transitive_dependency_is_importable():
+def test_transitive_dependency_is_importable() -> None:
     import six
 
     assert six.__version__
 
 
-def test_build_info_is_self_consistent():
+def test_build_info_is_self_consistent() -> None:
     info = devpi_smoke.build_info()
     assert info["build_id"], "package was built without a build stamp"
     assert info["source_version"] == info["dist_version"], (
-        "stamped source version %r disagrees with installed metadata version %r"
-        % (info["source_version"], info["dist_version"])
+        f"stamped source version {info['source_version']!r} disagrees with "
+        f"installed metadata version {info['dist_version']!r}"
     )
     assert any(req.startswith("six") for req in info["dist_requires"])
 
 
-def test_console_script_json_output():
+def test_console_script_json_output() -> None:
     out = subprocess.run(
         [sys.executable, "-m", "devpi_smoke.cli", "--json"],
         capture_output=True,

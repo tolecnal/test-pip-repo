@@ -1,6 +1,7 @@
 # Tooling for checking the code in this repo. Install with `make lint`, which creates
 # .venvs/lint on first use. Nothing here is needed to *run* pipcheck -- the harness
 # itself is standard-library only.
+ruff>=0.14
 isort>=5.13
 pyright>=1.1.400
 

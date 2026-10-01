@@ -14,6 +14,8 @@ from .config import STATE_FILE
 
 @dataclass
 class Build:
+    """One build of the test package, and whether it reached an index."""
+
     version: str
     build_id: str
     built_at: str
@@ -25,6 +27,8 @@ class Build:
 
 @dataclass
 class State:
+    """What this checkout has built so far, newest last."""
+
     builds: list[Build] = field(default_factory=list)
 
     # ------------------------------------------------------------------- lookups

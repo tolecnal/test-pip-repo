@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import re
 import urllib.parse
-from collections.abc import Iterable
 from dataclasses import dataclass
+from http import HTTPStatus
+from typing import TYPE_CHECKING
 
-from .config import Config
 from .util import Response, http
 
-_HREF = re.compile(r"""<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)</a>""", re.I)
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from .config import Config
+
+_HREF = re.compile(r"""<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)</a>""", re.IGNORECASE)
 
 
 def normalize(name: str) -> str:
@@ -20,6 +25,8 @@ def normalize(name: str) -> str:
 
 @dataclass
 class Link:
+    """One distribution file as the simple index advertises it."""
+
     filename: str
     url: str
     sha256: str | None = None
@@ -51,7 +58,7 @@ def fetch(cfg: Config, project: str, *, auth: bool = True) -> tuple[Response, li
         verify_tls=cfg.verify_tls,
     )
     links: list[Link] = []
-    if resp.status == 200:
+    if resp.status == HTTPStatus.OK:
         for href, text in _HREF.findall(resp.text):
             absolute = urllib.parse.urljoin(resp.url, href)
             fragment = urllib.parse.urlsplit(absolute).fragment
@@ -67,7 +74,7 @@ def version_of(filename: str) -> str | None:
     """Extract the version from a wheel or sdist filename."""
     if filename.endswith(".whl"):
         parts = filename[: -len(".whl")].split("-")
-        return parts[1] if len(parts) >= 2 else None
+        return parts[1] if parts[1:] else None
     for suffix in (".tar.gz", ".zip", ".tar.bz2"):
         if filename.endswith(suffix):
             stem = filename[: -len(suffix)]
@@ -89,7 +96,7 @@ def version_key(version: str) -> tuple[tuple[int, ...], int, int]:
     """Sort key approximating PEP 440 ordering (enough for test versions)."""
     match = re.match(r"\d+(?:\.\d+)*", version)
     release = tuple(int(p) for p in match.group(0).split(".")) if match else (0,)
-    release = (release + (0, 0, 0, 0))[:4]
+    release = (*release, 0, 0, 0, 0)[:4]
     rest = version[match.end() :].lower().lstrip(".-_") if match else version.lower()
 
     serial_match = re.search(r"\d+", rest)
@@ -102,7 +109,7 @@ def version_key(version: str) -> tuple[tuple[int, ...], int, int]:
         stage = -2
     elif rest.startswith(("rc", "c", "pre")):
         stage = -1
-    elif rest.startswith("post") or rest.startswith("r"):
+    elif rest.startswith(("post", "r")):
         stage = 1
     else:
         stage, serial = 0, 0
@@ -115,7 +122,7 @@ def latest(version_list: Iterable[str]) -> str | None:
 
 
 def project_json(cfg: Config, project: str) -> Response:
-    """devpi's JSON view of a project (requires devpi-web for the HTML one)."""
+    """Devpi's JSON view of a project (requires devpi-web for the HTML one)."""
     return http(
         f"{cfg.index_url}/{normalize(project)}",
         accept="application/json",

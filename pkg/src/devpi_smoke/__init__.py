@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from importlib import metadata
 from typing import Any
+
+import six
 
 try:
     from ._build_info import BUILD_ID, BUILT_AT, VERSION
@@ -14,7 +17,7 @@ except ImportError:
     BUILD_ID = "unstamped"
     BUILT_AT = "1970-01-01T00:00:00Z"
 
-__all__ = ["hello", "build_info", "__version__"]
+__all__ = ["__version__", "build_info", "hello"]
 
 __version__ = VERSION
 
@@ -27,13 +30,14 @@ def hello(who: str = "world") -> str:
 def build_info() -> dict[str, Any]:
     """Describe this build, as stamped in at build time and as the installed metadata.
 
+    Importing six at module scope is deliberate: it is a declared dependency, so a
+    missing one should fail loudly at import rather than quietly here.
+
     `source_version` comes from the stamped module inside the wheel/sdist;
     `dist_version` comes from the installed distribution's metadata. They must agree
     -- a mismatch means the index served an artifact whose filename lies about its
     contents.
     """
-    import six  # noqa: F401  -- proves the transitive dependency resolved
-
     info = {
         "source_version": VERSION,
         "build_id": BUILD_ID,
@@ -46,21 +50,18 @@ def build_info() -> dict[str, Any]:
     }
 
     try:
-        from importlib import metadata
-    except ImportError:  # pragma: no cover -- py<3.8
-        return info
-
-    try:
         info["dist_version"] = metadata.version("devpi-smoke")
         info["dist_requires"] = list(metadata.requires("devpi-smoke") or [])
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:  # noqa: BLE001 -- report any metadata failure, never raise
         info["dist_version"] = f"<unavailable: {exc}>"
 
     try:
-        import idna
-
-        info["extra_idna"] = getattr(idna, "__version__", "present")
+        # Local on purpose: idna comes from the optional `extra`, so its absence is a
+        # legitimate outcome rather than a broken install.
+        import idna  # noqa: PLC0415
     except ImportError:
         pass
+    else:
+        info["extra_idna"] = getattr(idna, "__version__", "present")
 
     return info

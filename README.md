@@ -26,7 +26,7 @@ Written for `devpi-server` + `devpi-web`, and meant to be run by hand from a clo
 | `pipcheck` | The entry point. `./pipcheck <command>`. |
 | `pipcheck.toml.example` | Committed template. Copy to `pipcheck.toml` (gitignored) for your server. |
 | `Makefile` | Shortcuts (`make test`, `make doctor`, `make compare`, `make lint`, …). Optional. |
-| `.isort.cfg`, `pyrightconfig.json` | Import-order and type-check settings. `make lint` runs both. |
+| `ruff.toml`, `.isort.cfg`, `pyrightconfig.json` | Lint, import-order and type-check settings. `make lint` runs all three. |
 | `.venvs/` | Created on demand: one tooling venv, plus a throwaway venv per install test. |
 | `reports/` | One JSON report per run. `./pipcheck compare` diffs them. |
 
@@ -381,26 +381,38 @@ confirms the replica serves releases the primary accepted.
 
 ## Development
 
-The code is kept clean under **isort** and **pyright**:
+The code is kept clean under **Ruff**, **isort** and **pyright**:
 
 ```bash
-make lint      # isort --check-only --diff, then pyright
-make format    # apply isort
+make lint      # ruff check, isort --check-only --diff, then pyright
+make format    # ruff check --fix, then isort
 ```
 
 `make lint` creates `.venvs/lint` from `requirements-dev.txt` on first use, and rebuilds
 it whenever that file changes. None of it is needed to *run* pipcheck — the harness
 itself is standard-library only; the lint venv also installs `six` and `idna` purely so
-pyright can resolve the test package's imports.
+the type checker can resolve the test package's imports.
 
-- **isort** — `profile = black` at 100 columns (`.isort.cfg`), which is the width the
-  code is written to.
-- **pyright** — `typeCheckingMode: "standard"`, clean with zero errors
-  (`pyrightconfig.json`). Strict mode reports ~90 further findings, essentially all of
-  them `Any` propagating out of `resp.json()`: devpi's JSON payloads are deliberately
-  treated as loose data and validated defensively at the point of use, so pinning them
-  down with TypedDicts would add weight without catching anything real. If you want
-  strict, that is the work it implies.
+The settings live in the repo, so an editor's language server and the command line agree
+rather than arguing about line length:
+
+- **Ruff** (`ruff.toml`) — `select = ["ALL"]` at 100 columns, clean. The `ignore` list is
+  short and each entry says why: printing is this tool's interface (`T201`); its long,
+  specific error messages are the product, not a smell (`TRY003`, `EM101`, `EM102`);
+  docstrings are required on modules and classes but not on every one-line helper
+  (`D102`, `D103`, …); and `Fail`/`Skip` read as check outcomes rather than as
+  `FailError` (`N818`). Tests additionally allow `assert` and local imports.
+- **isort** (`.isort.cfg`) — `profile = black` at 100 columns, matching Ruff's import
+  rules so the two never disagree.
+- **pyright** (`pyrightconfig.json`) — `typeCheckingMode: "standard"`, clean. Strict mode
+  reports ~70 further findings, essentially all `Any` propagating out of `resp.json()`:
+  devpi's JSON payloads are deliberately treated as loose data and validated at the point
+  of use, so pinning them down with TypedDicts would add weight without catching anything
+  real. If you want strict, that is the work it implies.
+
+Note that `ruff.toml` targets **py311** because that is what the harness needs. The test
+package in `pkg/` declares `requires-python >=3.9`, so keep its code free of 3.10+
+runtime idioms even where Ruff would permit them.
 
 Two conventions worth keeping if you extend the suite:
 

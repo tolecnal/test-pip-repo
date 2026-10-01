@@ -15,17 +15,31 @@ import shutil
 import tempfile
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Callable
-
-CheckFunc = Callable[["Context"], str]
+from typing import Any
 
 from . import builder, envs, simple, state
 from .config import PKG_DIR, Config
-from .util import Proc, http, sha256_bytes, strip_ansi
+from .util import Proc, Response, http, sha256_bytes, strip_ansi
 
 PHASES = ("server", "publish", "install", "mirror", "security", "web")
+
+CheckFunc = Callable[["Context"], str]
+
+# A project page may be served directly or redirected to its normalised spelling.
+_FOUND_OR_REDIRECT = (
+    HTTPStatus.OK,
+    HTTPStatus.MOVED_PERMANENTLY,
+    HTTPStatus.FOUND,
+    HTTPStatus.SEE_OTHER,
+    HTTPStatus.TEMPORARY_REDIRECT,
+    HTTPStatus.PERMANENT_REDIRECT,
+)
+# install_older_pin needs a previous release to reach for.
+_VERSIONS_FOR_HISTORY = 2
 
 
 class Fail(Exception):
@@ -38,6 +52,8 @@ class Skip(Exception):
 
 @dataclass
 class CheckDef:
+    """One registered check: what it is called, when it can run, and what it proves."""
+
     name: str
     phase: str
     func: CheckFunc
@@ -52,7 +68,8 @@ REGISTRY: list[CheckDef] = []
 
 
 def check(name: str, phase: str, description: str, *, needs_build: bool = False,
-          needs_upload: bool = False, needs_auth: bool = False, fatal: bool = False):
+          needs_upload: bool = False, needs_auth: bool = False,
+          fatal: bool = False) -> Callable[[CheckFunc], CheckFunc]:
     def wrap(func: CheckFunc) -> CheckFunc:
         REGISTRY.append(
             CheckDef(name, phase, func, description, needs_build, needs_upload, needs_auth, fatal)
@@ -64,6 +81,8 @@ def check(name: str, phase: str, description: str, *, needs_build: bool = False,
 
 @dataclass
 class Context:
+    """Everything a check needs, plus the scratch space checks share with each other."""
+
     cfg: Config
     st: state.State
     record: state.Build | None = None  # the build under test
@@ -136,7 +155,7 @@ class Context:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
     # convenience
-    def get(self, url: str, *, auth: bool = True, accept: str | None = None):
+    def get(self, url: str, *, auth: bool = True, accept: str | None = None) -> Response:
         return http(
             url,
             auth=self.cfg.auth if auth else None,
@@ -150,7 +169,7 @@ def _listed(ctx: Context) -> dict[str, list[simple.Link]]:
     """Versions the index currently lists for our package, fetched at most once."""
     if "versions" not in ctx.share:
         resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
-        if resp.status not in (200, 404):
+        if resp.status not in (HTTPStatus.OK, HTTPStatus.NOT_FOUND):
             raise Fail(f"simple page for {ctx.cfg.package} returned HTTP {resp.status}")
         ctx.share["links"] = links
         ctx.share["versions"] = simple.versions(links)
@@ -161,7 +180,7 @@ def _volatile(ctx: Context) -> bool:
     """Whether the target index allows releases to be replaced, fetched at most once."""
     if "volatile" not in ctx.share:
         resp = ctx.get(ctx.cfg.index_url, accept="application/json")
-        if resp.status != 200:
+        if resp.status != HTTPStatus.OK:
             raise Fail(f"index JSON view returned HTTP {resp.status}")
         result = resp.json().get("result", {})
         ctx.share["volatile"] = bool(result.get("volatile", True))
@@ -176,7 +195,7 @@ def _volatile(ctx: Context) -> bool:
        fatal=True)
 def server_status(ctx: Context) -> str:
     resp = ctx.get(f"{ctx.cfg.base}/+status", accept="application/json")
-    if resp.status != 200:
+    if resp.status != HTTPStatus.OK:
         raise Fail(f"GET /+status returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     ctx.share["status"] = result
@@ -208,12 +227,12 @@ def server_status(ctx: Context) -> str:
 @check("index_api", "server", "the target index advertises its upload and simple URLs")
 def index_api(ctx: Context) -> str:
     resp = ctx.get(f"{ctx.cfg.index_url}/+api", accept="application/json")
-    if resp.status == 404:
+    if resp.status == HTTPStatus.NOT_FOUND:
         raise Fail(
             f"index {ctx.cfg.index!r} does not exist on {ctx.cfg.base} "
             "(create it with: devpi index -c <index> bases=root/pypi)"
         )
-    if resp.status != 200:
+    if resp.status != HTTPStatus.OK:
         raise Fail(f"GET {ctx.cfg.index_url}/+api returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     # Let the rest of the suite use the server's own URLs rather than guessed ones.
@@ -224,7 +243,7 @@ def index_api(ctx: Context) -> str:
 @check("index_config", "server", "the index is configured with a PyPI base to fall through to")
 def index_config(ctx: Context) -> str:
     resp = ctx.get(ctx.cfg.index_url, accept="application/json")
-    if resp.status != 200:
+    if resp.status != HTTPStatus.OK:
         raise Fail(f"index JSON view returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     bases = result.get("bases") or []
@@ -243,7 +262,7 @@ def index_config(ctx: Context) -> str:
 def web_ui(ctx: Context) -> str:
     root = ctx.get(f"{ctx.cfg.base}/", accept="text/html")
     page = ctx.get(ctx.cfg.index_url, accept="text/html")
-    if page.status != 200:
+    if page.status != HTTPStatus.OK:
         raise Fail(f"index page returned HTTP {page.status}")
     looks_like_web = "devpi" in page.text.lower() and "<html" in page.text.lower()
     if not looks_like_web:
@@ -261,20 +280,20 @@ def web_ui(ctx: Context) -> str:
 def release_listed(ctx: Context) -> str:
     version = ctx.build.version
     resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
-    if resp.status != 200:
+    if resp.status != HTTPStatus.OK:
         raise Fail(f"simple page for {ctx.cfg.package} returned HTTP {resp.status}")
     ctx.share["links"] = links
     ctx.share["versions"] = simple.versions(links)
-    mine = [l for l in links if l.version == version]
+    mine = [link for link in links if link.version == version]
     if not mine:
         raise Fail(
             f"version {version} is absent from {simple.project_url(ctx.cfg, ctx.cfg.package)} "
             f"(index lists: {', '.join(sorted(ctx.share['versions'])) or 'nothing'})"
         )
-    if not any(l.is_wheel for l in mine):
-        raise Fail(f"no wheel listed for {version}, only {[l.filename for l in mine]}")
-    if not any(l.is_sdist for l in mine):
-        raise Fail(f"no sdist listed for {version}, only {[l.filename for l in mine]}")
+    if not any(link.is_wheel for link in mine):
+        raise Fail(f"no wheel listed for {version}, only {[link.filename for link in mine]}")
+    if not any(link.is_sdist for link in mine):
+        raise Fail(f"no sdist listed for {version}, only {[link.filename for link in mine]}")
     return (
         f"{len(mine)} file(s) for {version}; index holds "
         f"{len(ctx.share['versions'])} version(s) total"
@@ -291,7 +310,7 @@ def name_normalisation(ctx: Context) -> str:
     for variant in sorted(variants):
         resp = ctx.get(f"{base}/{variant}/")
         statuses[variant] = resp.status
-        if resp.status not in (200, 301, 302, 303, 307, 308):
+        if resp.status not in _FOUND_OR_REDIRECT:
             raise Fail(
                 f"/+simple/{variant}/ returned HTTP {resp.status}; pip would fail to find it"
             )
@@ -303,13 +322,13 @@ def name_normalisation(ctx: Context) -> str:
 def artifact_integrity(ctx: Context) -> str:
     version = ctx.build.version
     _listed(ctx)
-    links = [l for l in ctx.share["links"] if l.version == version]
+    links = [link for link in ctx.share["links"] if link.version == version]
     if not links:
         raise Fail(f"the index lists no files at all for {version}")
     verified = []
     for link in links:
         resp = ctx.get(link.url)
-        if resp.status != 200:
+        if resp.status != HTTPStatus.OK:
             raise Fail(f"downloading {link.filename} returned HTTP {resp.status}")
         got = sha256_bytes(resp.body)
         local = ctx.build.sha256.get(link.filename)
@@ -332,7 +351,7 @@ def artifact_integrity(ctx: Context) -> str:
 def release_metadata(ctx: Context) -> str:
     version = ctx.build.version
     resp = simple.project_json(ctx.cfg, ctx.cfg.package)
-    if resp.status != 200:
+    if resp.status != HTTPStatus.OK:
         raise Fail(f"JSON project view returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     if version not in result:
@@ -406,7 +425,7 @@ def install_latest(ctx: Context) -> str:
        needs_upload=True)
 def install_older_pin(ctx: Context) -> str:
     listed = sorted(_listed(ctx), key=simple.version_key)
-    if len(listed) < 2:
+    if len(listed) < _VERSIONS_FOR_HISTORY:
         raise Skip("only one version on the index; bump and re-run to exercise history")
     previous = listed[-2]
     venv = ctx.venv("older")
@@ -469,7 +488,11 @@ def package_tests(ctx: Context) -> str:
     )
     if not proc.ok:
         raise Fail(f"pytest failed against the installed package:\n{proc.tail(25)}")
-    summary = [l for l in proc.output.strip().splitlines() if "passed" in l or "failed" in l]
+    summary = [
+        out
+        for out in proc.output.strip().splitlines()
+        if "passed" in out or "failed" in out
+    ]
     return summary[-1].strip() if summary else "pytest passed"
 
 
@@ -490,7 +513,8 @@ def mirror_public_package(ctx: Context) -> str:
         )
     show = venv.pip("show", probe, cfg=ctx.cfg)
     version = next(
-        (l.split(":", 1)[1].strip() for l in show.output.splitlines() if l.startswith("Version:")),
+        (row.split(":", 1)[1].strip()
+         for row in show.output.splitlines() if row.startswith("Version:")),
         "?",
     )
     ctx.share["mirror_first"] = first
@@ -518,7 +542,8 @@ def mirror_cache(ctx: Context) -> str:
 @check("anonymous_read", "security", "the index is readable the way pip clients expect")
 def anonymous_read(ctx: Context) -> str:
     resp, _ = simple.fetch(ctx.cfg, ctx.cfg.package, auth=False)
-    allowed = resp.status in (200, 404)  # 404 = readable index, project not there yet
+    # 404 means the index is readable, the project just is not on it yet.
+    allowed = resp.status in (HTTPStatus.OK, HTTPStatus.NOT_FOUND)
     if ctx.cfg.expect_anonymous_read and not allowed:
         raise Fail(
             f"anonymous read of the simple index returned HTTP {resp.status}; "
@@ -574,8 +599,10 @@ def overwrite_protection(ctx: Context) -> str:
                 f"bytes for {', '.join(changed)} -- a rejected upload must not alter a release"
             )
         if not expect_reject:
-            return (f"re-release refused though {basis} expected it to be allowed: "
-                    f"{_first_error(proc)}")
+            return (
+                f"re-release refused though {basis} expected it to be allowed: "
+                f"{_first_error(proc)}"
+            )
         return f"release protected: {_first_error(proc)}"
 
     # Accepted: the recorded build is no longer what the index holds, so adopt it.
@@ -601,23 +628,23 @@ def overwrite_protection(ctx: Context) -> str:
 
 def _served_hashes(ctx: Context, version: str) -> dict[str, str | None]:
     _, links = simple.fetch(ctx.cfg, ctx.cfg.package)
-    return {l.filename: l.sha256 for l in links if l.version == version}
+    return {link.filename: link.sha256 for link in links if link.version == version}
 
 
 def _first_error(proc: Proc) -> str:
-    """The most informative line of a failed twine run.
+    """Return the most informative line of a failed twine run.
 
     twine --verbose ends with `ERROR HTTPError: <status> from <url>`; prefer that over
     the response body it also echoes.
     """
     lines = [
-        re.sub(r"^(ERROR|WARNING|INFO)\s+", "", l.strip())
-        for l in strip_ansi(proc.output).splitlines()
-        if l.strip()
+        re.sub(r"^(ERROR|WARNING|INFO)\s+", "", raw.strip())
+        for raw in strip_ansi(proc.output).splitlines()
+        if raw.strip()
     ]
     for pattern in (r"HTTPError", r"\b(4\d\d|5\d\d)\b", r"error", r"."):
         for line in lines:
-            if re.search(pattern, line, re.I):
+            if re.search(pattern, line, re.IGNORECASE):
                 return re.sub(r"\s+", " ", line)[:200]
     return "no output"
 
@@ -662,9 +689,10 @@ def web_search(ctx: Context) -> str:
         attempts += 1
         resp = ctx.get(url, accept="text/html")
         last = resp.status
-        if resp.status == 200 and simple.normalize(ctx.cfg.package) in simple.normalize(resp.text):
+        listed = simple.normalize(ctx.cfg.package) in simple.normalize(resp.text)
+        if resp.status == HTTPStatus.OK and listed:
             return f"found after {attempts} attempt(s)"
-        if resp.status == 404:
+        if resp.status == HTTPStatus.NOT_FOUND:
             raise Skip("no /+search endpoint; devpi-web search may be disabled")
         if time.monotonic() >= deadline:
             break

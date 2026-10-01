@@ -12,12 +12,14 @@ import tomllib
 from .config import PYPROJECT
 
 PART_NAMES = ("major", "minor", "patch", "dev", "post")
-_VERSION_LINE = re.compile(r'^(?P<prefix>version\s*=\s*")(?P<version>[^"]+)(?P<suffix>")', re.M)
+_VERSION_LINE = re.compile(
+    r'^(?P<prefix>version\s*=\s*")(?P<version>[^"]+)(?P<suffix>")', re.MULTILINE
+)
 _SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.(?:dev|post)(\d+))?$")
 
 
 def read() -> str:
-    with open(PYPROJECT, "rb") as handle:
+    with PYPROJECT.open("rb") as handle:
         return tomllib.load(handle)["project"]["version"]
 
 

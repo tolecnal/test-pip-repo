@@ -5,15 +5,17 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import time
-from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import __version__, checks, state
 from .checks import Context, Fail, Skip
 from .config import REPORT_DIR, Config
 from .util import bold, cyan, dim, green, human, red, yellow
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PASS, FAIL, SKIP, ERROR = "pass", "fail", "skip", "error"
 _MARK = {PASS: (green, "ok  "), FAIL: (red, "FAIL"), SKIP: (yellow, "skip"), ERROR: (red, "ERR ")}
@@ -21,6 +23,8 @@ _MARK = {PASS: (green, "ok  "), FAIL: (red, "FAIL"), SKIP: (yellow, "skip"), ERR
 
 @dataclass
 class Result:
+    """The outcome of running one check."""
+
     name: str
     phase: str
     status: str
@@ -31,6 +35,8 @@ class Result:
 
 @dataclass
 class Report:
+    """One whole run: what it tested, against which server, and how it went."""
+
     started_at: str
     index: str
     version: str | None
@@ -100,7 +106,7 @@ def run(
         record = for_index[-1] if for_index else st.last
     ctx = Context(cfg=cfg, st=st, record=record)
     report = Report(
-        started_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        started_at=_dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
         index=cfg.index_url,
         version=ctx.record.version if ctx.record else None,
         build_id=ctx.record.build_id if ctx.record else None,
@@ -143,7 +149,7 @@ def run(
     _summarise(report, cfg)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     base = f"{stamp}-{cfg.index.replace('/', '-')}"
     saved = REPORT_DIR / f"{base}.json"
     # Two runs can finish inside the same second; never overwrite an existing baseline.
@@ -156,7 +162,7 @@ def run(
               f"   (compare runs with: ./pipcheck compare)"))
     if json_out:
         path = Path(json_out)
-        if not path.is_absolute() and path.parent == Path("."):
+        if not path.is_absolute() and path.parent == Path():
             path = REPORT_DIR / path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(report.to_json())
@@ -178,7 +184,7 @@ def _load(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"could not read report {path}: {exc}")
+        raise SystemExit(f"could not read report {path}: {exc}") from exc
 
 
 def _clip(text: str, width: int = 96) -> str:
@@ -200,27 +206,59 @@ def _describe(label: str, report: dict[str, Any], path: Path) -> str:
             f"          {tally or 'no results'}   {dim(path.name)}")
 
 
-def compare(before_path: Path, after_path: Path) -> int:
-    """Diff two runs. Returns a process exit code: 1 if anything regressed."""
-    before, after = _load(before_path), _load(after_path)
-    old = {r["name"]: r for r in before.get("results", [])}
-    new = {r["name"]: r for r in after.get("results", [])}
-    bad = (FAIL, ERROR)
+@dataclass
+class Delta:
+    """How each check moved between two runs."""
 
-    regressed, fixed, still_failing, stopped_running, started_running = [], [], [], [], []
+    regressed: list[tuple[str, dict[str, Any], dict[str, Any]]] = field(default_factory=list)
+    fixed: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    still_failing: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    stopped_running: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    started_running: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    shared: int = 0
+
+    @property
+    def changed(self) -> int:
+        return (len(self.regressed) + len(self.fixed) + len(self.still_failing)
+                + len(self.stopped_running))
+
+
+def _delta(old: dict[str, Any], new: dict[str, Any]) -> Delta:
+    """Sort every check in the later run into what happened to it."""
+    bad = (FAIL, ERROR)
+    delta = Delta(
+        missing=[name for name in old if name not in new],
+        shared=len(set(old) & set(new)),
+    )
     for name, result in new.items():
         was = old.get(name)
         if was is None:
-            started_running.append((name, result))
+            delta.started_running.append((name, result))
         elif result["status"] in bad and was["status"] not in bad:
-            regressed.append((name, was, result))
+            delta.regressed.append((name, was, result))
         elif result["status"] == PASS and was["status"] in bad:
-            fixed.append((name, result))
+            delta.fixed.append((name, result))
         elif result["status"] in bad and was["status"] in bad:
-            still_failing.append((name, result))
+            delta.still_failing.append((name, result))
         elif result["status"] == SKIP and was["status"] == PASS:
-            stopped_running.append((name, result))
-    missing = [name for name in old if name not in new]
+            delta.stopped_running.append((name, result))
+    return delta
+
+
+def compare(before_path: Path, after_path: Path) -> int:
+    """Diff two runs. Returns a process exit code: 1 if anything regressed."""
+    before, after = _load(before_path), _load(after_path)
+    delta = _delta(
+        {r["name"]: r for r in before.get("results", [])},
+        {r["name"]: r for r in after.get("results", [])},
+    )
+    regressed = delta.regressed
+    fixed = delta.fixed
+    still_failing = delta.still_failing
+    stopped_running = delta.stopped_running
+    started_running = delta.started_running
+    missing = delta.missing
 
     print()
     print(bold("comparing runs"))
@@ -249,9 +287,7 @@ def compare(before_path: Path, after_path: Path) -> int:
         print(dim(f"not in the later run: {', '.join(sorted(missing))}"))
         print()
 
-    shared = len(set(old) & set(new))
-    unchanged = shared - len(regressed) - len(fixed) - len(still_failing) - len(stopped_running)
-    print(f"  {unchanged} of {_plural(shared, 'shared check')} unchanged")
+    print(f"  {delta.shared - delta.changed} of {_plural(delta.shared, 'shared check')} unchanged")
     if regressed:
         print("  " + red(f"verdict: {_plural(len(regressed), 'regression')} after the change"))
         print()
@@ -274,22 +310,21 @@ def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None =
     started = time.monotonic()
 
     status, detail = PASS, ""
-    try:
-        if blocked:
-            raise Skip(blocked)
-        reason = _prerequisite(ctx, definition)
-        if reason:
-            raise Skip(reason)
-        detail = definition.func(ctx) or ""
-    except Skip as exc:
-        status, detail = SKIP, str(exc)
-    except Fail as exc:
-        status, detail = FAIL, str(exc)
-    except ConnectionError as exc:
-        status, detail = FAIL, f"could not reach the server: {exc}"
-    except Exception as exc:  # harness bug or unexpected environment problem
-        status = ERROR
-        detail = f"{type(exc).__name__}: {exc}"
+    reason = blocked or _prerequisite(ctx, definition)
+    if reason:
+        status, detail = SKIP, reason
+    else:
+        try:
+            detail = definition.func(ctx) or ""
+        except Skip as exc:
+            status, detail = SKIP, str(exc)
+        except Fail as exc:
+            status, detail = FAIL, str(exc)
+        except ConnectionError as exc:
+            status, detail = FAIL, f"could not reach the server: {exc}"
+        except Exception as exc:  # noqa: BLE001 -- a harness bug must not abort the suite
+            status = ERROR
+            detail = f"{type(exc).__name__}: {exc}"
     duration = time.monotonic() - started
 
     colour, mark = _MARK[status]

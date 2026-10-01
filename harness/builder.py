@@ -9,10 +9,14 @@ import secrets
 import shutil
 import tarfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import envs, state, versioning
 from .config import BUILD_INFO, DIST_DIR, PKG_DIR, Config
 from .util import Proc, run, sha256_file
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 STAMP_TEMPLATE = '''"""Build stamp.
 
@@ -28,7 +32,7 @@ BUILT_AT = "{built_at}"
 
 
 def _now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def reset_stamp() -> None:
@@ -97,7 +101,7 @@ def build(cfg: Config, st: state.State, *, clean: bool = True) -> state.Build:
 
 
 @contextlib.contextmanager
-def preserved_source():
+def preserved_source() -> Iterator[None]:
     """Leave pyproject's version and the build stamp exactly as they were.
 
     Lets a check build something without disturbing the working tree.

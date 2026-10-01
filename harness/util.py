@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
+import shlex
 import ssl
 import subprocess
 import sys
@@ -14,6 +16,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 _COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
@@ -51,6 +55,8 @@ def cyan(t: str) -> str:
 
 @dataclass
 class Proc:
+    """A finished subprocess: what ran, how it exited, and everything it printed."""
+
     cmd: list[str]
     returncode: int
     output: str
@@ -68,8 +74,6 @@ class Proc:
 
 
 def shlex_join(cmd: list[str]) -> str:
-    import shlex
-
     return " ".join(shlex.quote(str(c)) for c in cmd)
 
 
@@ -94,8 +98,9 @@ def run(
         print(dim(f"  $ {shlex_join(cmd)}"))
     started = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: S603  -- running pip/twine is this tool's purpose
             cmd,
+            check=False,
             cwd=str(cwd) if cwd else None,
             env=full_env,
             stdout=subprocess.PIPE,
@@ -123,6 +128,8 @@ def run(
 
 @dataclass
 class Response:
+    """An HTTP response, including error statuses -- those are data here, not failures."""
+
     url: str
     status: int
     body: bytes
@@ -132,9 +139,8 @@ class Response:
     def text(self) -> str:
         return self.body.decode("utf-8", "replace")
 
-    def json(self):
-        import json
-
+    def json(self) -> Any:  # noqa: ANN401  -- JSON is Any by nature
+        """Parse the body as JSON. Raises if it is not JSON."""
         return json.loads(self.body or b"null")
 
 
@@ -148,7 +154,11 @@ def http(
     verify_tls: bool = True,
 ) -> Response:
     """Fetch a URL. HTTP error statuses are returned, not raised."""
-    req = urllib.request.Request(url, method=method)
+    # Only ever speak HTTP(S): a `file:` or custom scheme in a config file must not
+    # turn a repository check into a local file read.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        raise ValueError(f"refusing to fetch a non-HTTP(S) URL: {url}")
+    req = urllib.request.Request(url, method=method)  # noqa: S310  -- scheme checked above
     req.add_header("User-Agent", "pipcheck/1.0")
     if accept:
         req.add_header("Accept", accept)
@@ -163,7 +173,7 @@ def http(
         ctx.verify_mode = ssl.CERT_NONE
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
             return Response(
                 url, resp.status, resp.read(), {k.lower(): v for k, v in resp.headers.items()}
             )
@@ -194,7 +204,7 @@ def strip_ansi(text: str) -> str:
 
 def sha256_file(path: str | os.PathLike[str]) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
+    with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -204,5 +214,11 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_SECONDS_PER_MINUTE = 60
+
+
 def human(seconds: float) -> str:
-    return f"{seconds:.1f}s" if seconds < 60 else f"{seconds // 60:.0f}m{seconds % 60:02.0f}s"
+    if seconds < _SECONDS_PER_MINUTE:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(seconds, _SECONDS_PER_MINUTE)
+    return f"{minutes:.0f}m{rest:02.0f}s"
