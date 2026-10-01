@@ -1,0 +1,25 @@
+# --- local configuration (never commit: may hold credentials and host names)
+pipcheck.toml
+pipcheck.local.toml
+
+# --- generated: stamped into the package at build time by `pipcheck build`
+pkg/src/devpi_smoke/_build_info.py
+
+# --- local state and working files
+.venvs/
+dist/
+build/
+*.egg-info/
+.pipcheck-state.json
+reports/
+
+# --- python / tooling droppings
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- editor and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,44 @@
+# pipcheck configuration -- TEMPLATE.
+#
+#     cp pipcheck.toml.example pipcheck.toml
+#
+# pipcheck.toml is gitignored: it is per-machine, and may name internal hosts or hold
+# credentials. This template is the committed, documented copy -- keep it in sync when
+# you add a key, but never put a real password in it.
+#
+# Precedence, lowest to highest:
+#   these defaults  ->  pipcheck.toml  ->  pipcheck.local.toml
+#   ->  environment (DEVPI_URL, DEVPI_INDEX, DEVPI_USER, DEVPI_PASSWORD)
+#   ->  command line (--url, --index, --user, --insecure, ...)
+#
+# With no pipcheck.toml at all, the built-in defaults below apply, so CI can run on
+# environment variables alone.
+
+[repo]
+# --- connection -------------------------------------------------------------
+url   = "http://localhost:3141"   # devpi-server base URL
+index = "testing/dev"             # target index, as <user>/<index>
+user  = ""                        # upload credentials; reads work without them
+# password = "..."                # better: export DEVPI_PASSWORD
+verify_tls = true                 # false for a self-signed internal certificate
+
+# --- what to test with ------------------------------------------------------
+package      = "devpi-smoke"      # the throwaway package in pkg/
+mirror_probe = "wcwidth"          # public package used to test root/pypi proxying
+
+# --- expectations ------------------------------------------------------------
+expect_anonymous_read    = true   # unauthenticated pip clients can read the index
+expect_upload_auth       = true   # uploads with bad credentials must be refused
+expect_overwrite_rejected = "auto"  # may a release be replaced? "auto" = follow volatile
+run_pytest               = true   # run pkg/tests inside the install venv
+
+# --- behaviour ---------------------------------------------------------------
+# The interpreter used for the install-test venvs. Defaults to the one running
+# pipcheck (which must be 3.11+). Set it to test against the Python your users
+# actually have -- e.g. the 3.9 on an older distro.
+# python     = "/usr/bin/python3.9"
+timeout      = 900                # seconds per subprocess (pip can be slow)
+http_timeout = 30
+search_wait  = 20                 # seconds to let devpi-web index a new release
+keep_venvs   = false              # true to leave .venvs/test-* for inspection
+verbose      = false              # true to echo every command

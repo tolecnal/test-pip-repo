@@ -1,0 +1,5 @@
+#!/bin/sh
+# pipcheck: run the harness with the repo checkout on sys.path.
+set -e
+cd "$(dirname "$0")"
+exec "${PIPCHECK_PYTHON:-python3}" -m harness "$@"

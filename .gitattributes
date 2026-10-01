@@ -1,0 +1,3 @@
+# The pipcheck launcher is a shell script: keep LF endings and the exec bit
+pipcheck text eol=lf
+* text=auto

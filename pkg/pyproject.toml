@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devpi-smoke"
+version = "0.1.0"
+description = "Throwaway hello-world package used to smoke-test an internal devpi pip repository."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Internal Platform" }]
+keywords = ["devpi", "smoke-test", "internal"]
+classifiers = [
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3",
+]
+
+# A real (tiny, dependency-free) runtime dependency: installing this package from
+# the internal index must transitively pull `six` through devpi's root/pypi mirror.
+dependencies = ["six>=1.16"]
+
+[project.optional-dependencies]
+# Exercises extras resolution through the index.
+extra = ["idna>=3.0"]
+
+[project.scripts]
+devpi-smoke = "devpi_smoke.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
