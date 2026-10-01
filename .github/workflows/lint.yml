@@ -12,6 +12,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Deny by default: this workflow only reads the checkout. A job that needs more has to
+# ask for it explicitly.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
