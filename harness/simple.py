@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .config import Config
@@ -84,7 +85,7 @@ def versions(links: list[Link]) -> dict[str, list[Link]]:
     return found
 
 
-def version_key(version: str) -> tuple:
+def version_key(version: str) -> tuple[tuple[int, ...], int, int]:
     """Sort key approximating PEP 440 ordering (enough for test versions)."""
     match = re.match(r"\d+(?:\.\d+)*", version)
     release = tuple(int(p) for p in match.group(0).split(".")) if match else (0,)
@@ -108,7 +109,7 @@ def version_key(version: str) -> tuple:
     return release, stage, serial
 
 
-def latest(version_list) -> str | None:
+def latest(version_list: Iterable[str]) -> str | None:
     versions_ = list(version_list)
     return max(versions_, key=version_key) if versions_ else None
 

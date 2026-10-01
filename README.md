@@ -25,7 +25,8 @@ Written for `devpi-server` + `devpi-web`, and meant to be run by hand from a clo
 | `harness/` | The test harness. **Standard library only** — it never depends on the repo it tests. |
 | `pipcheck` | The entry point. `./pipcheck <command>`. |
 | `pipcheck.toml.example` | Committed template. Copy to `pipcheck.toml` (gitignored) for your server. |
-| `Makefile` | Shortcuts (`make test`, `make doctor`, `make compare`, …). Optional. |
+| `Makefile` | Shortcuts (`make test`, `make doctor`, `make compare`, `make lint`, …). Optional. |
+| `.isort.cfg`, `pyrightconfig.json` | Import-order and type-check settings. `make lint` runs both. |
 | `.venvs/` | Created on demand: one tooling venv, plus a throwaway venv per install test. |
 | `reports/` | One JSON report per run. `./pipcheck compare` diffs them. |
 
@@ -377,6 +378,41 @@ confirms the replica serves releases the primary accepted.
 ```
 
 `clean` leaves the tree as git sees it: every file it removes is generated or ignored.
+
+## Development
+
+The code is kept clean under **isort** and **pyright**:
+
+```bash
+make lint      # isort --check-only --diff, then pyright
+make format    # apply isort
+```
+
+`make lint` creates `.venvs/lint` from `requirements-dev.txt` on first use, and rebuilds
+it whenever that file changes. None of it is needed to *run* pipcheck — the harness
+itself is standard-library only; the lint venv also installs `six` and `idna` purely so
+pyright can resolve the test package's imports.
+
+- **isort** — `profile = black` at 100 columns (`.isort.cfg`), which is the width the
+  code is written to.
+- **pyright** — `typeCheckingMode: "standard"`, clean with zero errors
+  (`pyrightconfig.json`). Strict mode reports ~90 further findings, essentially all of
+  them `Any` propagating out of `resp.json()`: devpi's JSON payloads are deliberately
+  treated as loose data and validated defensively at the point of use, so pinning them
+  down with TypedDicts would add weight without catching anything real. If you want
+  strict, that is the work it implies.
+
+Two conventions worth keeping if you extend the suite:
+
+- A new check is one function with `@check(name, phase, description, ...)`, returning a
+  one-line summary on success and raising `Fail` (the repository misbehaved) or `Skip`
+  (does not apply here). Declare `needs_upload=True` if it needs a published release;
+  the runner then guarantees `ctx.build` exists.
+- Checks should work when run alone (`--only <name>`). Fetch what you need through the
+  `_listed(ctx)` / `_volatile(ctx)` helpers, which cache in `ctx.share`, rather than
+  assuming an earlier check populated it.
+
+---
 
 ## Troubleshooting
 

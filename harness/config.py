@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 PKG_DIR = ROOT / "pkg"
@@ -49,19 +51,33 @@ class Config:
     run_pytest: bool = True
     expect_anonymous_read: bool = True
     expect_upload_auth: bool = True
-    expect_overwrite_rejected: str = "auto"  # "auto" follows the index's volatile flag
+    expect_overwrite_rejected: str | bool = "auto"  # "auto" follows the index's volatile flag
     search_wait: int = 20  # seconds to let devpi-web index a new release
     keep_venvs: bool = False
     verbose: bool = False
 
     # --- populated at runtime
-    _api: dict = field(default_factory=dict, repr=False)
-    _sources: list = field(default_factory=list, repr=False)
+    _api: dict[str, str] = field(default_factory=dict, repr=False)
+    _sources: list[str] = field(default_factory=list, repr=False)
 
     @property
-    def sources(self) -> list:
+    def sources(self) -> list[str]:
         """Config files that were actually read, in increasing precedence."""
         return list(self._sources)
+
+    @classmethod
+    def build(cls, data: dict[str, Any], sources: list[str]) -> "Config":
+        """Construct from already-validated key/values, remembering where they came from."""
+        cfg = cls(**data)
+        cfg._sources = list(sources)
+        return cfg
+
+    def adopt_api(self, result: dict[str, Any]) -> None:
+        """Record the URLs the server advertises, in preference to our guesses."""
+        for key in ("simpleindex", "pypisubmit", "index", "login"):
+            value = result.get(key)
+            if value:
+                self._api[key] = urllib.parse.urljoin(self.base + "/", str(value))
 
     # ---------------------------------------------------------------- derived URLs
     @property
@@ -103,9 +119,9 @@ class Config:
         return f"{self.index_url}  (simple: {self.simple_url}, user: {who})"
 
 
-def load(path: str | None = None, overrides: dict | None = None) -> Config:
+def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Config:
     """Build a Config from file(s), then environment, then explicit overrides."""
-    data: dict = {}
+    data: dict[str, Any] = {}
     sources: list[str] = []
     files = [Path(path)] if path else [CONFIG_FILE, LOCAL_CONFIG_FILE]
     for candidate in files:
@@ -129,8 +145,7 @@ def load(path: str | None = None, overrides: dict | None = None) -> Config:
     unknown = set(data) - known
     if unknown:
         raise SystemExit(
-            f"unknown config key(s): {', '.join(sorted(unknown))}\nvalid keys: {', '.join(sorted(known))}"
+            f"unknown config key(s): {', '.join(sorted(unknown))}\n"
+            f"valid keys: {', '.join(sorted(known))}"
         )
-    cfg = Config(**data)
-    cfg._sources = sources
-    return cfg
+    return Config.build(data, sources)

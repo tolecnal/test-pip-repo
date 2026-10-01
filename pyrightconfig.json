@@ -1,0 +1,19 @@
+{
+  "include": [
+    "harness",
+    "pkg/src",
+    "pkg/tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venvs",
+    "dist",
+    "build"
+  ],
+  "extraPaths": [
+    "pkg/src"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "standard",
+  "reportMissingTypeStubs": false
+}

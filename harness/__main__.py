@@ -95,11 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subs.add_parser("list", help="list the available checks")
     clean = subs.add_parser("clean", parents=[common], help="remove venvs, builds and state")
-    clean.add_argument("--all", action="store_true", help="also remove the tooling venv and reports")
+    clean.add_argument("--all", action="store_true",
+                       help="also remove the tooling venv and reports")
     return parser
 
 
-def load_config(args) -> config.Config:
+def load_config(args: argparse.Namespace) -> config.Config:
     overrides = {
         "url": getattr(args, "url", None),
         "index": getattr(args, "index", None),
@@ -111,8 +112,10 @@ def load_config(args) -> config.Config:
     return config.load(getattr(args, "config", None), overrides)
 
 
-def selection(args) -> dict:
-    split = lambda value: [p.strip() for p in value.split(",") if p.strip()]  # noqa: E731
+def selection(args: argparse.Namespace) -> dict[str, list[str] | None]:
+    def split(value: str) -> list[str]:
+        return [part.strip() for part in value.split(",") if part.strip()]
+
     return {
         "only": split(args.only) if getattr(args, "only", None) else None,
         "skip": split(args.skip) if getattr(args, "skip", None) else None,
@@ -184,7 +187,7 @@ def cmd_list() -> int:
     return EXIT_OK
 
 
-def cmd_clean(args, cfg: config.Config) -> int:
+def cmd_clean(args: argparse.Namespace, cfg: config.Config) -> int:
     targets = [DIST_DIR, STATE_FILE, config.PKG_DIR / "build"]
     targets += list(VENV_DIR.glob("test-*"))
     targets += list(config.PKG_DIR.glob("src/*.egg-info"))
@@ -206,7 +209,7 @@ def cmd_clean(args, cfg: config.Config) -> int:
     return EXIT_OK
 
 
-def cmd_bootstrap(args, cfg: config.Config) -> int:
+def cmd_bootstrap(args: argparse.Namespace, cfg: config.Config) -> int:
     venv = envs.tooling(cfg, rebuild=args.rebuild, via_index=args.via_index)
     source = venv.source or "an existing venv"
     extras = "with devpi-client" if venv.has("devpi") else "without devpi-client"
@@ -225,14 +228,14 @@ def _resolve_report(value: str) -> Path:
     raise SystemExit(f"no such report: {value}")
 
 
-def _check_names(path: Path) -> frozenset:
+def _check_names(path: Path) -> frozenset[str]:
     """The set of checks a saved report covers."""
     return frozenset(
         r.get("name") for r in json.loads(path.read_text()).get("results", [])
     )
 
 
-def cmd_compare(args) -> int:
+def cmd_compare(args: argparse.Namespace) -> int:
     saved = runner.saved_reports()
     if args.list_reports or (not args.before and len(saved) < 2):
         if not saved:
@@ -276,7 +279,7 @@ def cmd_compare(args) -> int:
     return runner.compare(before, after)
 
 
-def cmd_remove(args, cfg: config.Config, st: state.State) -> int:
+def cmd_remove(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
     spec = args.spec
     if not spec:
         if not st.last:
@@ -298,7 +301,7 @@ def cmd_remove(args, cfg: config.Config, st: state.State) -> int:
     return EXIT_OK
 
 
-def cmd_cycle(args, cfg: config.Config, st: state.State) -> int:
+def cmd_cycle(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
     # Validate the check selection before building anything, so a typo in --only
     # cannot leave a half-finished publish behind.
     selected = runner.select(**selection(args))
@@ -373,11 +376,14 @@ def main(argv: list[str] | None = None) -> int:
             print(green(f"built {record.version} (build {record.build_id}) into {DIST_DIR}"))
             return EXIT_OK
         if args.command == "upload":
-            proc = builder.upload(cfg, st)
+            record = st.last
+            if record is None:
+                raise RuntimeError("nothing has been built yet -- run `pipcheck build` first")
+            proc = builder.upload(cfg, st, record)
             print(proc.tail(20))
             if not proc.ok:
                 return EXIT_FAILED
-            print(green(f"uploaded {st.last.version} to {cfg.index_url}"))
+            print(green(f"uploaded {record.version} to {cfg.index_url}"))
             return EXIT_OK
 
         if args.command == "doctor":

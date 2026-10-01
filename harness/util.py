@@ -76,7 +76,7 @@ def shlex_join(cmd: list[str]) -> str:
 def run(
     cmd: list[str],
     *,
-    cwd: str | os.PathLike | None = None,
+    cwd: str | os.PathLike[str] | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 1800,
     verbose: bool = False,
@@ -192,7 +192,7 @@ def strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
-def sha256_file(path: str | os.PathLike) -> str:
+def sha256_file(path: str | os.PathLike[str]) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):

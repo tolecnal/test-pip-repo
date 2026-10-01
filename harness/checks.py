@@ -17,7 +17,9 @@ import time
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+
+CheckFunc = Callable[["Context"], str]
 
 from . import builder, envs, simple, state
 from .config import PKG_DIR, Config
@@ -38,7 +40,7 @@ class Skip(Exception):
 class CheckDef:
     name: str
     phase: str
-    func: Callable
+    func: CheckFunc
     description: str
     needs_build: bool = False
     needs_upload: bool = False
@@ -49,9 +51,9 @@ class CheckDef:
 REGISTRY: list[CheckDef] = []
 
 
-def check(name, phase, description, *, needs_build=False, needs_upload=False,
-          needs_auth=False, fatal=False):
-    def wrap(func):
+def check(name: str, phase: str, description: str, *, needs_build: bool = False,
+          needs_upload: bool = False, needs_auth: bool = False, fatal: bool = False):
+    def wrap(func: CheckFunc) -> CheckFunc:
         REGISTRY.append(
             CheckDef(name, phase, func, description, needs_build, needs_upload, needs_auth, fatal)
         )
@@ -65,11 +67,23 @@ class Context:
     cfg: Config
     st: state.State
     record: state.Build | None = None  # the build under test
-    share: dict = field(default_factory=dict)  # data passed between checks
-    venvs: dict = field(default_factory=dict)
+    share: dict[str, Any] = field(default_factory=dict)  # data passed between checks
+    venvs: dict[str, envs.Venv] = field(default_factory=dict)
     tmp: Path = field(default_factory=lambda: Path(tempfile.mkdtemp(prefix="pipcheck-")))
 
     # ------------------------------------------------------------------ helpers
+    @property
+    def build(self) -> state.Build:
+        """The build under test.
+
+        Checks declaring needs_build/needs_upload are only reached once the runner has
+        confirmed there is one, so this never raises for them; it keeps the invariant in
+        one place instead of spreading `assert` over every check.
+        """
+        if self.record is None:
+            raise Fail("nothing has been built yet -- run `pipcheck cycle`")
+        return self.record
+
     def venv(self, name: str) -> envs.Venv:
         """Create a venv for an install test, reusing it if a previous check made it."""
         if name not in self.venvs:
@@ -82,7 +96,7 @@ class Context:
             "install", "--no-cache-dir", *self.cfg.pip_index_args(), *extra, *specs, cfg=self.cfg
         )
 
-    def provenance(self, venv: envs.Venv) -> dict:
+    def provenance(self, venv: envs.Venv) -> dict[str, Any]:
         """Ask the installed console script what it is."""
         proc = venv.run_python("-m", "devpi_smoke.cli", "--json", cfg=self.cfg)
         if not proc.ok:
@@ -92,14 +106,18 @@ class Context:
         except (ValueError, json.JSONDecodeError) as exc:
             raise Fail(f"unparseable build info ({exc}):\n{proc.tail(10)}") from exc
 
-    def assert_identity(self, venv: envs.Venv, version: str, build_id: str | None = None) -> dict:
+    def assert_identity(
+        self, venv: envs.Venv, version: str, build_id: str | None = None
+    ) -> dict[str, Any]:
         """Verify an installed copy really is the release we asked for."""
         info = self.provenance(venv)
         problems = []
         if info.get("source_version") != version:
             problems.append(f"code says version {info.get('source_version')!r}, wanted {version!r}")
         if info.get("dist_version") != version:
-            problems.append(f"metadata says version {info.get('dist_version')!r}, wanted {version!r}")
+            problems.append(
+                f"metadata says version {info.get('dist_version')!r}, wanted {version!r}"
+            )
         if build_id and info.get("build_id") != build_id:
             problems.append(
                 f"build id {info.get('build_id')!r} != {build_id!r} -- the index served a "
@@ -128,7 +146,7 @@ class Context:
         )
 
 
-def _listed(ctx: Context) -> dict:
+def _listed(ctx: Context) -> dict[str, list[simple.Link]]:
     """Versions the index currently lists for our package, fetched at most once."""
     if "versions" not in ctx.share:
         resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
@@ -199,9 +217,7 @@ def index_api(ctx: Context) -> str:
         raise Fail(f"GET {ctx.cfg.index_url}/+api returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     # Let the rest of the suite use the server's own URLs rather than guessed ones.
-    for key in ("simpleindex", "pypisubmit", "index", "login"):
-        if result.get(key):
-            ctx.cfg._api[key] = urllib.parse.urljoin(ctx.cfg.base + "/", result[key])
+    ctx.cfg.adopt_api(result)
     return f"simple={ctx.cfg.simple_url} upload={ctx.cfg.upload_url}"
 
 
@@ -243,7 +259,7 @@ def web_ui(ctx: Context) -> str:
 @check("release_listed", "publish", "the uploaded release appears on the simple index",
        needs_upload=True)
 def release_listed(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     resp, links = simple.fetch(ctx.cfg, ctx.cfg.package)
     if resp.status != 200:
         raise Fail(f"simple page for {ctx.cfg.package} returned HTTP {resp.status}")
@@ -276,14 +292,16 @@ def name_normalisation(ctx: Context) -> str:
         resp = ctx.get(f"{base}/{variant}/")
         statuses[variant] = resp.status
         if resp.status not in (200, 301, 302, 303, 307, 308):
-            raise Fail(f"/+simple/{variant}/ returned HTTP {resp.status}; pip would fail to find it")
+            raise Fail(
+                f"/+simple/{variant}/ returned HTTP {resp.status}; pip would fail to find it"
+            )
     return ", ".join(f"{k}={v}" for k, v in statuses.items())
 
 
 @check("artifact_integrity", "publish", "downloaded artifacts match the bytes that were uploaded",
        needs_upload=True)
 def artifact_integrity(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     _listed(ctx)
     links = [l for l in ctx.share["links"] if l.version == version]
     if not links:
@@ -294,7 +312,7 @@ def artifact_integrity(ctx: Context) -> str:
         if resp.status != 200:
             raise Fail(f"downloading {link.filename} returned HTTP {resp.status}")
         got = sha256_bytes(resp.body)
-        local = ctx.record.sha256.get(link.filename)
+        local = ctx.build.sha256.get(link.filename)
         if link.sha256 and got != link.sha256:
             raise Fail(
                 f"{link.filename}: served bytes hash {got[:12]} but the index advertises "
@@ -312,7 +330,7 @@ def artifact_integrity(ctx: Context) -> str:
 @check("release_metadata", "publish", "the index serves correct metadata for the release",
        needs_upload=True)
 def release_metadata(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     resp = simple.project_json(ctx.cfg, ctx.cfg.package)
     if resp.status != 200:
         raise Fail(f"JSON project view returned HTTP {resp.status}")
@@ -333,12 +351,12 @@ def release_metadata(ctx: Context) -> str:
 @check("install_wheel", "install", "a pinned wheel installs from the index and is the right build",
        needs_upload=True)
 def install_wheel(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     venv = ctx.venv("wheel")
     proc = ctx.pip_install(venv, f"{ctx.cfg.package}=={version}", extra=("--only-binary", ":all:"))
     if not proc.ok:
         raise Fail(f"pip install {ctx.cfg.package}=={version} failed:\n{proc.tail(20)}")
-    info = ctx.assert_identity(venv, version, ctx.record.build_id)
+    info = ctx.assert_identity(venv, version, ctx.build.build_id)
     script = venv.bin("devpi-smoke")
     if not script.exists():
         raise Fail("console script devpi-smoke was not installed (entry points lost?)")
@@ -348,7 +366,7 @@ def install_wheel(ctx: Context) -> str:
 @check("install_sdist", "install", "the sdist installs and builds from source via the index",
        needs_upload=True)
 def install_sdist(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     venv = ctx.venv("sdist")
     # --no-binary forces pip to fetch the sdist and resolve the build backend
     # (setuptools, wheel) through the index too.
@@ -358,11 +376,12 @@ def install_sdist(ctx: Context) -> str:
             f"sdist install failed (this also exercises build-backend resolution "
             f"through the index):\n{proc.tail(25)}"
         )
-    info = ctx.assert_identity(venv, version, ctx.record.build_id)
+    info = ctx.assert_identity(venv, version, ctx.build.build_id)
     return f"sdist {version} built and installed, build {info['build_id']}"
 
 
-@check("install_latest", "install", "an unpinned install resolves to the newest version on the index",
+@check("install_latest", "install",
+       "an unpinned install resolves to the newest version on the index",
        needs_upload=True)
 def install_latest(ctx: Context) -> str:
     expected = simple.latest(_listed(ctx))
@@ -379,7 +398,7 @@ def install_latest(ctx: Context) -> str:
             f"pip resolved {ctx.cfg.package} to {got}, but the newest version the index "
             f"lists is {expected} -- version ordering or index listing is wrong"
         )
-    note = "" if expected == ctx.record.version else f" (not our build {ctx.record.version})"
+    note = "" if expected == ctx.build.version else f" (not our build {ctx.build.version})"
     return f"resolved to {got}{note}"
 
 
@@ -402,12 +421,12 @@ def install_older_pin(ctx: Context) -> str:
 
 @check("install_extras", "install", "extras resolve through the index", needs_upload=True)
 def install_extras(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     venv = ctx.venv("extras")
     proc = ctx.pip_install(venv, f"{ctx.cfg.package}[extra]=={version}")
     if not proc.ok:
         raise Fail(f"installing {ctx.cfg.package}[extra]=={version} failed:\n{proc.tail(20)}")
-    info = ctx.assert_identity(venv, version, ctx.record.build_id)
+    info = ctx.assert_identity(venv, version, ctx.build.build_id)
     if not info.get("extra_idna"):
         raise Fail("extra 'extra' did not pull its dependency (idna missing)")
     return f"extra pulled idna {info['extra_idna']}"
@@ -416,7 +435,7 @@ def install_extras(ctx: Context) -> str:
 @check("pip_download", "install", "pip can download the release and its dependencies",
        needs_upload=True)
 def pip_download(ctx: Context) -> str:
-    version = ctx.record.version
+    version = ctx.build.version
     dest = ctx.tmp / "download"
     dest.mkdir(parents=True, exist_ok=True)
     venv = ctx.venvs.get("wheel") or ctx.venv("wheel")
@@ -427,7 +446,8 @@ def pip_download(ctx: Context) -> str:
     if not proc.ok:
         raise Fail(f"pip download failed:\n{proc.tail(20)}")
     got = sorted(p.name for p in dest.iterdir())
-    if not any(ctx.cfg.package.replace("-", "_") in name or ctx.cfg.package in name for name in got):
+    wanted = (ctx.cfg.package, ctx.cfg.package.replace("-", "_"))
+    if not any(spelling in name for name in got for spelling in wanted):
         raise Fail(f"download produced no artifact for {ctx.cfg.package}: {got}")
     return f"downloaded {len(got)} file(s): {', '.join(got[:4])}"
 
@@ -525,15 +545,16 @@ def overwrite_protection(ctx: Context) -> str:
     must refuse it; a volatile one must apply it completely, not partially.
     """
     expect = ctx.cfg.expect_overwrite_rejected
-    if isinstance(expect, str) and expect.strip().lower() == "auto":
-        volatile = _volatile(ctx)
-        expect_reject, basis = not volatile, f"auto (volatile={volatile})"
-    elif isinstance(expect, str):
-        expect_reject, basis = expect.strip().lower() in ("1", "true", "yes"), "configured"
+    if isinstance(expect, str):
+        if expect.strip().lower() == "auto":
+            volatile = _volatile(ctx)
+            expect_reject, basis = not volatile, f"auto (volatile={volatile})"
+        else:
+            expect_reject, basis = expect.strip().lower() in ("1", "true", "yes"), "configured"
     else:
-        expect_reject, basis = bool(expect), "configured"
+        expect_reject, basis = expect, "configured"
 
-    original = ctx.record
+    original = ctx.build
     # Build the variant of the version under test -- not of whatever pyproject says now.
     with builder.preserved_source():
         variant = builder.build_variant(ctx.cfg, ctx.tmp / "variant", original.version)
@@ -553,7 +574,8 @@ def overwrite_protection(ctx: Context) -> str:
                 f"bytes for {', '.join(changed)} -- a rejected upload must not alter a release"
             )
         if not expect_reject:
-            return f"re-release refused though {basis} expected it to be allowed: {_first_error(proc)}"
+            return (f"re-release refused though {basis} expected it to be allowed: "
+                    f"{_first_error(proc)}")
         return f"release protected: {_first_error(proc)}"
 
     # Accepted: the recorded build is no longer what the index holds, so adopt it.

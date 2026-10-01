@@ -1,0 +1,10 @@
+# Tooling for checking the code in this repo. Install with `make lint`, which creates
+# .venvs/lint on first use. Nothing here is needed to *run* pipcheck -- the harness
+# itself is standard-library only.
+isort>=5.13
+pyright>=1.1.400
+
+# The test package's own runtime dependencies, so pyright can resolve the imports in
+# pkg/src rather than reporting them as missing.
+six>=1.16
+idna>=3.0

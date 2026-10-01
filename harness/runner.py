@@ -5,8 +5,10 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import __version__, checks, state
 from .checks import Context, Fail, Skip
@@ -34,7 +36,7 @@ class Report:
     version: str | None
     build_id: str | None
     pipcheck_version: str = __version__
-    server: dict = field(default_factory=dict)  # what we were talking to
+    server: dict[str, Any] = field(default_factory=dict)  # what we were talking to
     results: list[Result] = field(default_factory=list)
     duration: float = 0.0
 
@@ -172,7 +174,7 @@ def saved_reports() -> list[Path]:
     return sorted(REPORT_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
 
 
-def _load(path: Path) -> dict:
+def _load(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -188,7 +190,7 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
-def _describe(label: str, report: dict, path: Path) -> str:
+def _describe(label: str, report: dict[str, Any], path: Path) -> str:
     versions = (report.get("server") or {}).get("versions") or {}
     stack = ", ".join(f"{k} {v}" for k, v in sorted(versions.items())) or "versions unknown"
     counts = report.get("counts") or {}
@@ -226,7 +228,7 @@ def compare(before_path: Path, after_path: Path) -> int:
     print(_describe("after", after, after_path))
     print()
 
-    def block(title, colour, rows):
+    def block(title: str, colour: Callable[[str], str], rows: list[tuple[str, str]]) -> None:
         if not rows:
             return
         print(colour(f"{title} ({len(rows)})"))
@@ -239,7 +241,8 @@ def compare(before_path: Path, after_path: Path) -> int:
     block("fixed", green, [(n, f"now passing: {_clip(r['detail'])}") for n, r in fixed])
     block("still failing", red, [(n, _clip(r["detail"])) for n, r in still_failing])
     block("no longer ran", yellow,
-          [(n, f"passed before, now skipped: {_clip(r['detail'], 70)}") for n, r in stopped_running])
+          [(n, f"passed before, now skipped: {_clip(r['detail'], 70)}")
+           for n, r in stopped_running])
     block("newly ran", cyan,
           [(n, f"{r['status']}: {_clip(r['detail'], 70)}") for n, r in started_running])
     if missing:
@@ -302,12 +305,15 @@ def _prerequisite(ctx: Context, definition: checks.CheckDef) -> str | None:
     """Why this check cannot run, if it cannot."""
     if definition.needs_auth and not ctx.cfg.user:
         return "no credentials configured"
-    if (definition.needs_build or definition.needs_upload) and ctx.record is None:
-        return "nothing built yet (run: pipcheck cycle)"
-    if definition.needs_upload and not ctx.record.uploaded:
-        return f"{ctx.record.version} has not been uploaded"
-    if definition.needs_upload and ctx.record.index != ctx.cfg.index:
-        return f"{ctx.record.version} was uploaded to {ctx.record.index}, not {ctx.cfg.index}"
+    if definition.needs_build or definition.needs_upload:
+        record = ctx.record
+        if record is None:
+            return "nothing built yet (run: pipcheck cycle)"
+        if definition.needs_upload:
+            if not record.uploaded:
+                return f"{record.version} has not been uploaded"
+            if record.index != ctx.cfg.index:
+                return f"{record.version} was uploaded to {record.index}, not {ctx.cfg.index}"
     return None
 
 
