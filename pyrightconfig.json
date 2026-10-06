@@ -2,7 +2,8 @@
   "include": [
     "harness",
     "pkg/src",
-    "pkg/tests"
+    "pkg/tests",
+    "extras"
   ],
   "exclude": [
     "**/__pycache__",
@@ -16,6 +17,10 @@
   "venvPath": ".venvs",
   "venv": "lint",
   "pythonVersion": "3.11",
+  "executionEnvironments": [
+    { "root": "extras", "pythonVersion": "3.8" },
+    { "root": "." }
+  ],
   "typeCheckingMode": "standard",
   "reportMissingTypeStubs": false,
   "reportMissingModuleSource": "error"

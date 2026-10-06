@@ -17,7 +17,7 @@ BUMP ?= patch
 PIPCHECK ?= ./pipcheck
 PYTHON ?= python3
 LINT := .venvs/lint
-SOURCES := harness pkg
+SOURCES := harness pkg extras
 
 .PHONY: help bootstrap doctor show test verify quick compare reports release build upload remove clean list lint format
 

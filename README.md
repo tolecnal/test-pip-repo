@@ -14,6 +14,9 @@ Written for `devpi-server` + `devpi-web`, and meant to be run by hand from a clo
   a read-only look.
 - **"Did the upgrade break anything?"** — run it before, upgrade the server, run it
   again, then `./pipcheck compare` to see exactly what changed.
+- **"Alert me when it degrades."** — [`extras/check_devpi.py`](extras/README.md), a
+  Nagios / Icinga 2 check built on devpi's `/+status`. It is read-only and cheap enough
+  to run every minute.
 
 ---
 
@@ -25,6 +28,7 @@ Written for `devpi-server` + `devpi-web`, and meant to be run by hand from a clo
 | `harness/` | The test harness. **Standard library only** — it never depends on the repo it tests. |
 | `pipcheck` | The entry point. `./pipcheck <command>`. |
 | `pipcheck.toml.example` | Committed template. Copy to `pipcheck.toml` (gitignored) for your server. |
+| `extras/` | `check_devpi.py`, a Nagios / Icinga 2 check for continuous monitoring, plus configs for both. See [`extras/README.md`](extras/README.md). |
 | `Makefile` | Shortcuts (`make test`, `make doctor`, `make compare`, `make lint`, …). Optional. |
 | `ruff.toml`, `.isort.cfg`, `pyrightconfig.json` | Lint, import-order and type-check settings. `make lint` runs all three. |
 | `.venvs/` | Created on demand: one tooling venv, plus a throwaway venv per install test. |
@@ -423,7 +427,7 @@ rather than arguing about line length:
 
   Suppressions use Ruff's own directive with rule *names*, which is what preview asks for
   and reads better than a code: `# ruff: ignore[blind-except] -- a harness bug must not
-  abort the suite`. There are eight, each with a reason. That syntax needs ruff ≥ 0.16.10,
+  abort the suite`. Each one carries its reason. That syntax needs ruff ≥ 0.16.10,
   which is what `requirements-dev.txt` pins.
 - **isort** (`.isort.cfg`) — `profile = black` at 100 columns, matching Ruff's import
   rules so the two never disagree.
@@ -443,6 +447,10 @@ rather than arguing about line length:
 Note that `ruff.toml` targets **py311** because that is what the harness needs. The test
 package in `pkg/` declares `requires-python >=3.9`, so keep its code free of 3.10+
 runtime idioms even where Ruff would permit them.
+
+`extras/` is the exception that is enforced rather than remembered. The monitoring check
+runs on monitoring hosts, which are often older, so Ruff (`per-file-target-version`) and
+pyright (`executionEnvironments`) both check it against **Python 3.8**.
 
 ### Linting in CI
 

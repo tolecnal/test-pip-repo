@@ -10,6 +10,10 @@ line-length = 100
 src = ["harness", "pkg/src"]
 extend-exclude = [".venvs", "dist", "build"]
 
+# extras/ runs on monitoring hosts, not where the harness runs: hold it to 3.8.
+[per-file-target-version]
+"extras/**" = "py38"
+
 [lint]
 preview = true
 select = ["ALL"]
@@ -41,6 +45,9 @@ ignore = [
 # Tests: asserts are the point, pytest discovers them without a package, and the local
 # imports inside tests are deliberate (they are what is under test).
 "pkg/tests/*" = ["S101", "INP001", "PLC0415"]
+# A standalone script copied onto monitoring hosts, not a package; printing is its
+# plugin output; and 3.8 has no builtin generics, so typing's aliases stay.
+"extras/*" = ["INP001", "UP006", "UP035", "UP045"]
 # Generated at build time by `pipcheck build`.
 "pkg/src/devpi_smoke/_build_info.py" = ["ALL"]
 
