@@ -66,7 +66,7 @@ def fetch(cfg: Config, project: str, *, auth: bool = True) -> tuple[Response, li
         url,
         auth=cfg.auth if auth else None,
         timeout=cfg.http_timeout,
-        verify_tls=cfg.verify_tls,
+        verify_tls=cfg.tls,
     )
     links: list[Link] = []
     if resp.status == HTTPStatus.OK:
@@ -156,5 +156,5 @@ def project_json(cfg: Config, project: str) -> Response:
         accept="application/json",
         auth=cfg.auth,
         timeout=cfg.http_timeout,
-        verify_tls=cfg.verify_tls,
+        verify_tls=cfg.tls,
     )

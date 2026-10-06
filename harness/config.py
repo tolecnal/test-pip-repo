@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .util import origin
+
 ROOT = Path(__file__).resolve().parent.parent
 PKG_DIR = ROOT / "pkg"
 DIST_DIR = ROOT / "dist"
@@ -28,7 +30,10 @@ ENV_MAP = {
     "DEVPI_INDEX": "index",
     "DEVPI_USER": "user",
     "DEVPI_PASSWORD": "password",
+    "DEVPI_CA_BUNDLE": "ca_bundle",
 }
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
 
 @dataclass
@@ -41,6 +46,7 @@ class Config:
     user: str = ""  # upload credentials; read-only checks work without them
     password: str = ""
     verify_tls: bool = True
+    ca_bundle: str = ""  # PEM file of CAs to trust, for a private CA; beats verify_tls = false
 
     # --- what to test with
     package: str = "devpi-smoke"
@@ -78,12 +84,27 @@ class Config:
         cfg._sources = list(sources)
         return cfg
 
-    def adopt_api(self, result: dict[str, Any]) -> None:
-        """Record the URLs the server advertises, in preference to our guesses."""
+    def adopt_api(self, result: dict[str, Any]) -> list[str]:
+        """Record the URLs the server advertises, in preference to our guesses.
+
+        Only URLs on the configured scheme, host and port are adopted: credentials go
+        to these, and a server (or a misconfigured outside_url) must not be able to
+        point them somewhere else. The guessed URLs work against the same server.
+
+        Returns:
+            The advertised URLs that were ignored for pointing at another origin.
+        """
+        ignored = []
         for key in ("simpleindex", "pypisubmit", "index", "login"):
             value = result.get(key)
-            if value:
-                self._api[key] = urllib.parse.urljoin(self.base + "/", str(value))
+            if not value:
+                continue
+            url = urllib.parse.urljoin(self.base + "/", str(value))
+            if origin(url) == origin(self.base):
+                self._api[key] = url
+            else:
+                ignored.append(url)
+        return ignored
 
     # ---------------------------------------------------------------- derived URLs
     @property
@@ -109,6 +130,27 @@ class Config:
         return (self.user, self.password) if self.user else None
 
     @property
+    def tls(self) -> bool | str:
+        """How to verify the server's certificate, as `util.http` takes it.
+
+        Returns:
+            False when verification is off, the CA bundle path when one is set, else True.
+        """
+        if not self.verify_tls:
+            return False
+        return self.ca_bundle or True
+
+    @property
+    def cleartext_credentials(self) -> bool:
+        """Whether the password would cross the network unencrypted.
+
+        Returns:
+            True for credentials over http:// to anything but this machine.
+        """
+        scheme, host, _ = origin(self.base)
+        return bool(self.password) and scheme == "http" and host not in _LOOPBACK
+
+    @property
     def interpreter(self) -> str:
         return self.python or sys.executable
 
@@ -117,13 +159,16 @@ class Config:
 
         Returns:
             `--index-url` for the index, plus `--trusted-host` when the index is plain
-            HTTP or TLS verification is off. No extra-index: anything pip cannot find
-            here is a finding, not something to fetch from PyPI behind our back.
+            HTTP or TLS verification is off, or `--cert` for a configured CA bundle. No
+            extra-index: anything pip cannot find here is a finding, not something to
+            fetch from PyPI behind our back.
         """
         args = ["--index-url", self.simple_url]
         host = self.simple_url.split("//", 1)[-1].split("/", 1)[0]
         if self.simple_url.startswith("http://") or not self.verify_tls:
             args += ["--trusted-host", host.split("@")[-1]]
+        elif self.ca_bundle:
+            args += ["--cert", self.ca_bundle]
         return args
 
     def summary(self) -> str:
@@ -139,8 +184,9 @@ def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Co
 
     Raises:
         SystemExit: if an explicitly requested config file is missing, if a file sets a
-            key that does not exist, or if the resulting url has no http(s) scheme --
-            all operator mistakes worth stopping for before anything else runs.
+            key that does not exist, if the resulting url has no http(s) scheme, or if
+            ca_bundle names a missing file -- all operator mistakes worth stopping for
+            before anything else runs.
     """
     data: dict[str, Any] = {}
     sources: list[str] = []
@@ -177,4 +223,9 @@ def load(path: str | None = None, overrides: dict[str, Any] | None = None) -> Co
             f"url must start with http:// or https:// (got {cfg.url!r})\n"
             "set it in pipcheck.toml, or via DEVPI_URL / --url"
         )
+    if cfg.ca_bundle:
+        bundle = Path(cfg.ca_bundle).expanduser()
+        if not bundle.is_file():
+            raise SystemExit(f"ca_bundle not found: {cfg.ca_bundle}")
+        cfg.ca_bundle = str(bundle.resolve())
     return cfg

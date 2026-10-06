@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from . import envs, state, versioning
 from .config import BUILD_INFO, DIST_DIR, PKG_DIR, Config
-from .util import Proc, run, sha256_file
+from .util import Proc, run, sha256_file, strip_ansi
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -212,17 +212,71 @@ def upload(cfg: Config, st: state.State, build_record: state.Build | None = None
     return proc
 
 
+# twine has no switch to skip certificate verification (only --cert, for a CA bundle),
+# so `verify_tls = false` is honoured by running it with requests told not to verify.
+_TWINE_INSECURE = """\
+import sys, warnings
+import requests
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+_request = requests.Session.request
+def request(self, *args, **kwargs):
+    kwargs["verify"] = False
+    return _request(self, *args, **kwargs)
+requests.Session.request = request
+from twine.__main__ import main
+sys.argv[0] = "twine"
+sys.exit(main())
+"""
+
+
 def _twine(cfg: Config, files: list[str], user: str, password: str) -> Proc:
     tool = envs.tooling(cfg)
     # --verbose is what makes twine report the HTTP status; it does not echo the
     # password. Credentials go through the environment, never argv.
+    insecure = cfg.upload_url.startswith("https://") and not cfg.verify_tls
+    twine = [str(tool.python), "-c", _TWINE_INSECURE] if insecure else [str(tool.bin("twine"))]
     cmd = [
-        str(tool.bin("twine")), "upload", "--non-interactive",
+        *twine, "upload", "--non-interactive",
         "--disable-progress-bar", "--verbose",
         "--repository-url", cfg.upload_url, *files,
     ]
+    if cfg.verify_tls and cfg.ca_bundle:
+        cmd[len(twine) + 1:len(twine) + 1] = ["--cert", cfg.ca_bundle]
     env = {"TWINE_USERNAME": user, "TWINE_PASSWORD": password}
     return run(cmd, env=env, timeout=cfg.timeout, verbose=cfg.verbose)
+
+
+# Fragments of twine/requests output, and what each one means for the operator.
+_UPLOAD_HINTS = (
+    ("CERTIFICATE_VERIFY_FAILED",
+     ("the TLS certificate is not trusted: point ca_bundle at your CA, fix the certificate, "
+      "or (last resort) set verify_tls = false / --insecure")),
+    ("WRONG_VERSION_NUMBER",
+     "the server does not speak TLS on that port: use http://, or fix the port"),
+    ("Connection refused", "nothing is listening there: check the host and port in url"),
+    ("Name or service not known", "the host does not resolve: check the url"),
+    ("nodename nor servname", "the host does not resolve: check the url"),
+    ("timed out", "the connection timed out: wrong host, or a firewall dropping the port"),
+    ("401 Unauthorized", "devpi rejected the credentials: check DEVPI_USER/DEVPI_PASSWORD"),
+    ("403 Forbidden",
+     "the user may not upload to this index: add it to acl_upload, or use another index"),
+    ("404 Not Found", "the upload URL does not exist: check url and index"),
+    ("409 Conflict",
+     "this version already exists on a non-volatile index: publish a new version"),
+)
+
+
+def explain_upload_failure(proc: Proc) -> str | None:
+    """Name the likely cause of a failed twine upload.
+
+    Returns:
+        A one-line hint, or None when the output matches nothing recognisable.
+    """
+    output = strip_ansi(proc.output)
+    for needle, hint in _UPLOAD_HINTS:
+        if needle in output:
+            return hint
+    return None
 
 
 def upload_as(cfg: Config, files: list[str], user: str, password: str) -> Proc:

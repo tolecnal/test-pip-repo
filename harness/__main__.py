@@ -6,10 +6,23 @@ import argparse
 import json
 import shutil
 import sys
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import __version__, builder, checks, client, config, envs, runner, state, versioning
+from . import (
+    __version__,
+    builder,
+    checks,
+    client,
+    config,
+    envs,
+    preflight,
+    runner,
+    state,
+    util,
+    versioning,
+)
 from .config import DIST_DIR, REPORT_DIR, STATE_FILE, VENV_DIR
 from .util import bold, dim, green, red, yellow
 
@@ -43,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--keep-venvs", action="store_true",
                         help="leave test venvs on disk for inspection")
     common.add_argument("--insecure", action="store_true",
-                        help="do not verify TLS certificates (self-signed internal certs)")
+                        help="do not verify TLS certificates; prefer ca_bundle for a private CA")
 
     selection = argparse.ArgumentParser(add_help=False)
     selection.add_argument("--only", metavar="NAMES",
@@ -88,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     boot.add_argument("--rebuild", action="store_true", help="recreate it from scratch")
 
     remove = subs.add_parser("remove", parents=[common],
-                             help="delete a release from the index (needs devpi-client)")
+                             help="delete a release from the index")
     remove.add_argument("spec", nargs="?", help="name==version (default: the last build)")
 
     cmp_ = subs.add_parser(
@@ -171,7 +184,7 @@ def cmd_show(cfg: config.Config, st: state.State) -> int:
     print(bold("tooling") + f"  {green('ready') if ready else yellow('not bootstrapped')}"
           f" {dim(str(tool.path))}")
     if ready:
-        print(dim(f"  devpi-client   {'yes' if tool.has('devpi') else 'no (admin commands off)'}"))
+        print(dim(f"  devpi-client   {'yes' if tool.has('devpi') else 'no'}"))
     print()
     return EXIT_OK
 
@@ -308,10 +321,12 @@ def cmd_remove(args: argparse.Namespace, cfg: config.Config, st: state.State) ->
     if not cfg.user:
         raise SystemExit("removing a release needs credentials (DEVPI_USER/DEVPI_PASSWORD)")
     print(dim(f"removing {spec} from {cfg.index_url}"))
-    proc = client.remove(cfg, spec)
-    print(proc.tail(15))
-    if not proc.ok:
-        print(red("removal failed"))
+    try:
+        resp = client.remove(cfg, spec)
+    except ConnectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if resp.status != HTTPStatus.OK:
+        print(red(f"removal failed: {client.message(resp)}"))
         return EXIT_FAILED
     record = st.find(spec.split("==")[-1])
     if record:
@@ -321,18 +336,22 @@ def cmd_remove(args: argparse.Namespace, cfg: config.Config, st: state.State) ->
     return EXIT_OK
 
 
-def cmd_cycle(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
-    # Validate the check selection before building anything, so a typo in --only
-    # cannot leave a half-finished publish behind.
-    selected = runner.select(**selection(args))
-    # Fail before touching the version if the publish step cannot possibly work.
-    if not args.no_upload and not cfg.user:
-        raise RuntimeError(
-            "publishing needs credentials: set user/password in pipcheck.toml or "
-            "DEVPI_USER/DEVPI_PASSWORD in the environment (or pass --no-upload)"
-        )
+def _print_upload_failure(proc: util.Proc) -> None:
+    print(red("upload failed:"))
+    print(util.strip_ansi(proc.tail(25)))
+    hint = builder.explain_upload_failure(proc)
+    if hint:
+        print(yellow(f"  -> {hint}"))
 
-    # 1. decide the version
+
+def _build_and_upload(
+    args: argparse.Namespace, cfg: config.Config, st: state.State,
+) -> tuple[state.Build, util.Proc | None]:
+    """Set the version, build, and (unless --no-upload) upload.
+
+    Returns:
+        The build, and the finished twine process -- None when --no-upload skipped it.
+    """
     if args.set_version:
         version = versioning.write(args.set_version)
         print(f"version set to {bold(version)}")
@@ -343,24 +362,69 @@ def cmd_cycle(args: argparse.Namespace, cfg: config.Config, st: state.State) -> 
         version = versioning.write(versioning.bump(args.bump))
         print(f"{args.bump} bump -> {bold(version)}")
 
-    # 2. build
     record = builder.build(cfg, st)
     names = sorted(Path(f).name for f in record.files)
     print(f"built {green(record.version)} build {record.build_id}: {', '.join(names)}")
 
-    # 3. upload
     if args.no_upload:
         print(yellow("skipping upload (--no-upload)"))
-    else:
-        proc = builder.upload(cfg, st, record)
-        if not proc.ok:
-            print(red("upload failed:"))
-            print(proc.tail(25))
-            return EXIT_FAILED
-        print(green(f"uploaded {record.version} to {cfg.index_url}"))
+        return record, None
+    return record, builder.upload(cfg, st, record)
+
+
+def _publish(args: argparse.Namespace, cfg: config.Config, st: state.State) -> state.Build | None:
+    """Version, build and upload -- all or nothing.
+
+    If the build or upload fails, pyproject's version, the build stamp and the recorded
+    build history go back to what they were, so a failed publish neither burns a
+    version number nor leaves an unpublished build looking like the current one.
+
+    Returns:
+        The published (or, with --no-upload, built) record, or None if the upload failed.
+    """
+    previous_version = versioning.read()
+    previous_builds = list(st.builds)
+
+    def rollback() -> None:
+        if versioning.read() != previous_version:
+            versioning.write(previous_version)
+        st.builds = previous_builds
+        st.save()
+        builder.reset_stamp()
+        shutil.rmtree(DIST_DIR, ignore_errors=True)  # holds only the failed build now
+        print(yellow(f"rolled back: version is {previous_version} again, nothing recorded"))
+
+    try:
+        record, proc = _build_and_upload(args, cfg, st)
+    except BaseException:
+        rollback()
+        raise
+    if proc is None:
+        return record
+    if not proc.ok:
+        _print_upload_failure(proc)
+        rollback()
+        return None
+    print(green(f"uploaded {record.version} to {cfg.index_url}"))
+    return record
+
+
+def cmd_cycle(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
+    # Validate the check selection before building anything, so a typo in --only
+    # cannot leave a half-finished publish behind.
+    selected = runner.select(**selection(args))
+    # Prove the publish can work -- reachable, TLS, index, credentials -- before the
+    # version is touched.
+    for warning in preflight.run(cfg, upload=not args.no_upload):
+        print(yellow(f"warning: {warning}"))
+
+    record = _publish(args, cfg, st)
+    if record is None:
+        return EXIT_FAILED
 
     # 4. verify
-    report = runner.run(cfg, st, selected, record=record, json_out=args.json_out)
+    report = runner.run(cfg, st, selected, record=record, json_out=args.json_out,
+                        unpublished_ok=args.no_upload)
     return EXIT_OK if report.ok else EXIT_FAILED
 
 
@@ -384,10 +448,13 @@ def cmd_upload(cfg: config.Config, st: state.State) -> int:
     record = st.last
     if record is None:
         raise RuntimeError("nothing has been built yet -- run `pipcheck build` first")
+    for warning in preflight.run(cfg, upload=True):
+        print(yellow(f"warning: {warning}"))
     proc = builder.upload(cfg, st, record)
-    print(proc.tail(20))
     if not proc.ok:
+        _print_upload_failure(proc)
         return EXIT_FAILED
+    print(proc.tail(20))
     print(green(f"uploaded {record.version} to {cfg.index_url}"))
     return EXIT_OK
 
@@ -440,6 +507,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compare(args)
 
     cfg = load_config(args)
+    if cfg.cleartext_credentials:
+        print(yellow(f"warning: {cfg.base} is plain http -- the password for {cfg.user!r} "
+                     "crosses the network unencrypted; use https"), file=sys.stderr)
+    if cfg.base.startswith("https://") and not cfg.verify_tls:
+        print(yellow("warning: TLS verification is off -- anyone on the network path can "
+                     "read the password; set ca_bundle instead"), file=sys.stderr)
     st = state.load()
     try:
         return _dispatch(args, cfg, st)

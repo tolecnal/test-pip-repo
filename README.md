@@ -81,8 +81,15 @@ uploaded 0.3.1 to https://devpi.internal:3141/testing/dev
   repository behaves as expected -- https://devpi.internal:3141/testing/dev
 ```
 
-Exit code is `0` when everything passed, `1` when a check failed, `2` on a setup
-problem (no credentials, unusable interpreter, tooling venv missing).
+Exit code is `0` when everything passed, `1` when a check failed (or could not run
+because there is no published release to test), `2` on a setup problem (no credentials,
+unusable interpreter, tooling venv missing, server unreachable).
+
+Before `cycle` touches the version it runs a preflight: the server answers as devpi,
+the scheme and port are right, the TLS certificate is trusted (or `verify_tls = false`),
+the index exists, and devpi accepts the credentials. Each failure names the setting to
+fix. If the build or upload still fails after that, the version and build history are
+rolled back, so a failed publish never burns a version number.
 
 ---
 
@@ -183,7 +190,7 @@ the server itself is unreachable.
 lowest to highest:
 
 built-in defaults → `pipcheck.toml` → `pipcheck.local.toml` → environment
-(`DEVPI_URL`, `DEVPI_INDEX`, `DEVPI_USER`, `DEVPI_PASSWORD`) → flags (`--url`,
+(`DEVPI_URL`, `DEVPI_INDEX`, `DEVPI_USER`, `DEVPI_PASSWORD`, `DEVPI_CA_BUNDLE`) → flags (`--url`,
 `--index`, `--user`, `--insecure`, `--config`).
 
 No config file is required: the defaults plus environment variables are enough, which
@@ -206,7 +213,16 @@ mirror_probe              = "wcwidth"  # public package used to test root/pypi p
 # python                  = "/usr/bin/python3.9"  # interpreter for the install tests
 ```
 
-For a self-signed internal certificate, use `--insecure` or `verify_tls = false`.
+For a certificate from an internal CA, set `ca_bundle` (or `DEVPI_CA_BUNDLE`) to the CA's
+PEM file. The harness's own HTTP calls, pip (`--cert`) and twine (`--cert`) all verify
+against it. `verify_tls = false` / `--insecure` turns verification off for all three
+instead. It works, but anyone on the network path could then read the password, so the
+harness warns every time it runs that way. It also warns when credentials go over plain
+`http://` to another machine.
+
+Credentials go only to the configured server: they are not sent along a redirect to
+another host, and any URL the server advertises (upload, simple index) on a different
+host is ignored in favour of the configured one.
 
 ---
 
@@ -286,8 +302,9 @@ Two things to get right before pointing `cycle` at an index:
   ```
 
   `verify` works off `.pipcheck-state.json`, which is local to your checkout — on a
-  different machine the publish-dependent checks will skip until that machine has
-  published once itself. The phases that never need a release of our own are
+  different machine the publish-dependent checks cannot run until that machine has
+  published once itself, and the run is reported as **INCOMPLETE** (exit `1`) rather
+  than passing on the checks that happened to run. The phases that never need a release of our own are
   `server` and `mirror`:
 
   ```bash

@@ -8,7 +8,7 @@
 #
 # Precedence, lowest to highest:
 #   these defaults  ->  pipcheck.toml  ->  pipcheck.local.toml
-#   ->  environment (DEVPI_URL, DEVPI_INDEX, DEVPI_USER, DEVPI_PASSWORD)
+#   ->  environment (DEVPI_URL, DEVPI_INDEX, DEVPI_USER, DEVPI_PASSWORD, DEVPI_CA_BUNDLE)
 #   ->  command line (--url, --index, --user, --insecure, ...)
 #
 # With no pipcheck.toml at all, the built-in defaults below apply, so CI can run on
@@ -20,7 +20,11 @@ url   = "http://localhost:3141"   # devpi-server base URL
 index = "testing/dev"             # target index, as <user>/<index>
 user  = ""                        # upload credentials; reads work without them
 # password = "..."                # better: export DEVPI_PASSWORD
-verify_tls = true                 # false for a self-signed internal certificate
+verify_tls = true                 # keep true; see ca_bundle for an internal CA
+# ca_bundle = "/etc/ssl/internal-ca.pem"  # PEM of CAs to trust (or DEVPI_CA_BUNDLE).
+#                                 Used by the harness, pip and twine. Prefer this to
+#                                 verify_tls = false, which lets anyone on the network
+#                                 path read the password.
 
 # --- what to test with ------------------------------------------------------
 package      = "devpi-smoke"      # the throwaway package in pkg/

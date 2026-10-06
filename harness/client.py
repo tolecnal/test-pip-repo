@@ -1,63 +1,52 @@
-"""Thin wrapper around the optional `devpi` client, used for index administration.
+"""Index administration over devpi's HTTP API.
 
-Kept optional on purpose: everything in the check suite works with plain pip and
-twine, so a missing devpi-client only disables the admin conveniences.
+Goes through the same Basic-auth HTTP path as the checks rather than driving the
+`devpi` client, whose `login --password` puts the password on a command line where
+any local user can read it with `ps`.
 """
 
 from __future__ import annotations
 
-from . import envs
-from .config import VENV_DIR, Config
-from .util import Proc, run
+import urllib.parse
+from typing import TYPE_CHECKING
 
-CLIENT_DIR = VENV_DIR / "devpi-clientdir"  # never touch the user's ~/.devpi
+from . import simple
+from .config import VENV_DIR
+from .util import Response, http
 
+if TYPE_CHECKING:
+    from .config import Config
 
-def available(cfg: Config) -> bool:
-    """Report whether the optional devpi client is available.
-
-    Returns:
-        True if `devpi` is installed in the tooling venv, so the admin commands work.
-    """
-    return envs.tooling(cfg).has("devpi")
-
-
-def _devpi(cfg: Config, *args: str) -> Proc:
-    tool = envs.tooling(cfg)
-    if not tool.has("devpi"):
-        raise RuntimeError(
-            "devpi-client is not installed in the tooling venv; "
-            "run `pipcheck bootstrap` with network access to install it"
-        )
-    CLIENT_DIR.mkdir(parents=True, exist_ok=True)
-    return run(
-        [str(tool.bin("devpi")), "--clientdir", str(CLIENT_DIR), *args],
-        timeout=cfg.timeout,
-        verbose=cfg.verbose,
-    )
+# Left behind by older versions, which drove devpi-client; `clean` removes it, along
+# with the login token it may hold.
+CLIENT_DIR = VENV_DIR / "devpi-clientdir"
 
 
-def login(cfg: Config) -> Proc:
-    use = _devpi(cfg, "use", cfg.index_url)
-    if not use.ok:
-        return use
-    return _devpi(cfg, "login", cfg.user, "--password", cfg.password)
-
-
-def remove(cfg: Config, spec: str) -> Proc:
-    """Delete a release (`name==version`) or a whole project from the index.
+def remove(cfg: Config, spec: str) -> Response:
+    """Delete a release (`name==version`) or a whole project (`name`) from the index.
 
     Returns:
-        The finished `devpi remove` process -- or the failed login that stopped it.
+        devpi's answer: 200 when deleted, 403 when refused (a non-volatile index, or no
+        permission), 404 when there is nothing by that name.
     """
-    logged_in = login(cfg)
-    if not logged_in.ok:
-        return logged_in
-    return _devpi(cfg, "remove", "-y", spec)
+    name, _, version = spec.partition("==")
+    url = f"{cfg.index_url}/{simple.normalize(name.strip())}"
+    if version.strip():
+        url += "/" + urllib.parse.quote(version.strip(), safe="")
+    return http(url, method="DELETE", auth=cfg.auth, accept="application/json",
+                timeout=cfg.http_timeout, verify_tls=cfg.tls)
 
 
-def list_releases(cfg: Config, project: str) -> Proc:
-    use = _devpi(cfg, "use", cfg.index_url)
-    if not use.ok:
-        return use
-    return _devpi(cfg, "list", project)
+def message(resp: Response) -> str:
+    """Pull devpi's explanation out of an answer.
+
+    Returns:
+        The `message` devpi sent, or the HTTP status when there is none.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and body.get("message"):
+        return " ".join(str(body["message"]).split())
+    return f"HTTP {resp.status}"

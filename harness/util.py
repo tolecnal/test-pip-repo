@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import ssl
 import subprocess
 import sys
@@ -157,6 +158,63 @@ class Response:
         return json.loads(self.body or b"null")
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def origin(url: str) -> tuple[str, str, int | None]:
+    """Reduce a URL to its origin: scheme, host and port.
+
+    Returns:
+        The lower-cased scheme and host, and the port with the scheme's default filled
+        in, so `https://h/` and `https://H:443/x` compare equal.
+    """
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORTS.get(scheme)
+
+
+class _SameOriginAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but carry credentials only to the origin they were meant for.
+
+    urllib copies every ordinary header onto the redirected request, Authorization
+    included -- to another host, or from https down to http. Credentials are therefore
+    attached as an unredirected header, which urllib drops, and re-attached here only
+    when the redirect stays on the same scheme, host and port.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,  # ruff: ignore[any-type]  -- urllib's own annotation
+        code: int,
+        msg: str,
+        headers: Any,  # ruff: ignore[any-type]  -- urllib's own annotation
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        auth = req.unredirected_hdrs.get("Authorization")
+        if new is not None and auth and origin(newurl) == origin(req.full_url):
+            new.add_unredirected_header("Authorization", auth)
+        return new
+
+
+def tls_context(*, verify_tls: bool | str) -> ssl.SSLContext:
+    """Build the TLS context for a `verify_tls` setting.
+
+    Returns:
+        A context that verifies against the system store (True), against a CA bundle
+        (a path), or not at all (False).
+    """
+    if verify_tls is False:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    if isinstance(verify_tls, str):
+        return ssl.create_default_context(cafile=verify_tls)
+    return ssl.create_default_context()
+
+
 def http(
     url: str,
     *,
@@ -164,9 +222,12 @@ def http(
     auth: tuple[str, str] | None = None,
     accept: str | None = None,
     timeout: int = 30,
-    verify_tls: bool = True,
+    verify_tls: bool | str = True,  # a str is a CA bundle to verify against
+    json_body: Any = None,  # ruff: ignore[any-type]  -- any JSON-serialisable value
 ) -> Response:
     """Fetch a URL.
+
+    Credentials follow a redirect only to the same scheme, host and port.
 
     Returns:
         The response, including error statuses: a 404 or 401 is data a check reasons
@@ -175,28 +236,30 @@ def http(
     Raises:
         ValueError: if the URL is not http(s), so a `file:` scheme in a config file
             cannot turn a repository check into a local file read.
-        ConnectionError: if the server could not be reached at all, or timed out.
+        ConnectionError: if the server could not be reached at all, or timed out. The
+            message says why in operator terms -- wrong host, wrong port, wrong scheme,
+            untrusted certificate -- because that is what decides the fix.
     """
     # Only ever speak HTTP(S): a `file:` or custom scheme in a config file must not
     # turn a repository check into a local file read.
     if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
         raise ValueError(f"refusing to fetch a non-HTTP(S) URL: {url}")
-    req = urllib.request.Request(url, method=method)  # ruff: ignore[suspicious-url-open-usage]  -- scheme checked above
+    data = None if json_body is None else json.dumps(json_body).encode()
+    req = urllib.request.Request(url, data=data, method=method)  # ruff: ignore[suspicious-url-open-usage]  -- scheme checked above
     req.add_header("User-Agent", "pipcheck/1.0")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
     if accept:
         req.add_header("Accept", accept)
     if auth and auth[0]:
         token = base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
-        req.add_header("Authorization", f"Basic {token}")
+        # Unredirected: see _SameOriginAuthRedirect.
+        req.add_unredirected_header("Authorization", f"Basic {token}")
 
-    ctx = None
-    if url.startswith("https") and not verify_tls:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
+    https = urllib.request.HTTPSHandler(context=tls_context(verify_tls=verify_tls))
+    opener = urllib.request.build_opener(https, _SameOriginAuthRedirect())
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # ruff: ignore[suspicious-url-open-usage]
+        with opener.open(req, timeout=timeout) as resp:
             return Response(
                 url, resp.status, resp.read(), {k.lower(): v for k, v in resp.headers.items()}
             )
@@ -205,9 +268,42 @@ def http(
             url, exc.code, exc.read(), {k.lower(): v for k, v in (exc.headers or {}).items()}
         )
     except urllib.error.URLError as exc:
-        raise ConnectionError(f"{url}: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise ConnectionError(f"{url}: timed out after {timeout}s") from exc
+        raise ConnectionError(f"{url}: {explain_unreachable(url, exc.reason)}") from exc
+    except (TimeoutError, OSError) as exc:  # raised outside URLError mid-response
+        raise ConnectionError(f"{url}: {explain_unreachable(url, exc, timeout)}") from exc
+
+
+def explain_unreachable(url: str, reason: object, timeout: int | None = None) -> str:
+    """Turn a low-level connection failure into what the operator should check.
+
+    Returns:
+        The original reason, followed by a hint naming the likely misconfiguration.
+    """
+    netloc = urllib.parse.urlsplit(url).netloc
+    text = str(reason)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        hint = ("the server's TLS certificate is not trusted: set ca_bundle to your internal "
+                "CA's PEM file (or DEVPI_CA_BUNDLE), fix the certificate, or as a last "
+                "resort set verify_tls = false / pass --insecure")
+    elif (isinstance(reason, ssl.SSLError) and "WRONG_VERSION_NUMBER" in text) or (
+        url.startswith("https://") and "handshake" in text
+    ):
+        hint = (f"{netloc} does not speak TLS -- the url probably wants http://, not https://, "
+                "or the port is wrong")
+    elif isinstance(reason, ConnectionRefusedError):
+        hint = f"nothing is listening on {netloc} -- check the host and port in url"
+    elif isinstance(reason, socket.gaierror):
+        hint = f"the host in {netloc} does not resolve -- check the url"
+    elif isinstance(reason, TimeoutError | socket.timeout):
+        after = f" after {timeout}s" if timeout else ""
+        hint = (f"timed out{after} -- a firewall dropping the port, or the wrong host, "
+                "is the usual cause")
+    elif isinstance(reason, ConnectionResetError | ssl.SSLError):
+        hint = (f"{netloc} closed the connection -- check that the scheme (http/https) and "
+                "port match what the server listens on")
+    else:
+        return text
+    return f"{text}\n  -> {hint}"
 
 
 def host_of(url: str) -> str:

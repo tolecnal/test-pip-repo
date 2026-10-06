@@ -196,7 +196,7 @@ class Context:
             auth=self.cfg.auth if auth else None,
             accept=accept,
             timeout=self.cfg.http_timeout,
-            verify_tls=self.cfg.verify_tls,
+            verify_tls=self.cfg.tls,
         )
 
 
@@ -286,8 +286,11 @@ def index_api(ctx: Context) -> str:
         raise Fail(f"GET {ctx.cfg.index_url}/+api returned HTTP {resp.status}")
     result = resp.json().get("result", {})
     # Let the rest of the suite use the server's own URLs rather than guessed ones.
-    ctx.cfg.adopt_api(result)
-    return f"simple={ctx.cfg.simple_url} upload={ctx.cfg.upload_url}"
+    ignored = ctx.cfg.adopt_api(result)
+    detail = f"simple={ctx.cfg.simple_url} upload={ctx.cfg.upload_url}"
+    if ignored:
+        detail += f"\nignored advertised URLs on another host: {', '.join(ignored)}"
+    return detail
 
 
 @check("index_config", "server", "the index is configured with a PyPI base to fall through to")

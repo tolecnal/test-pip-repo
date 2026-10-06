@@ -31,6 +31,9 @@ class Result:
     detail: str
     duration: float
     description: str = ""
+    # Skipped only because there was no published release to test -- the check was
+    # wanted, but could not prove anything.
+    unpublished: bool = False
 
 
 @dataclass
@@ -45,6 +48,18 @@ class Report:
     server: dict[str, Any] = field(default_factory=dict)  # what we were talking to
     results: list[Result] = field(default_factory=list)
     duration: float = 0.0
+    unpublished_ok: bool = False  # --no-upload: those skips were asked for
+
+    @property
+    def unverified(self) -> list[Result]:
+        """Checks that could not run because nothing had been published.
+
+        Returns:
+            Those results, unless the run opted out of publishing on purpose.
+        """
+        if self.unpublished_ok:
+            return []
+        return [r for r in self.results if r.unpublished]
 
     @property
     def counts(self) -> dict[str, int]:
@@ -56,7 +71,7 @@ class Report:
     @property
     def ok(self) -> bool:
         tally = self.counts
-        return tally[FAIL] == 0 and tally[ERROR] == 0
+        return tally[FAIL] == 0 and tally[ERROR] == 0 and not self.unverified
 
     def to_json(self) -> str:
         payload = asdict(self)
@@ -106,11 +121,14 @@ def run(
     *,
     record: state.Build | None = None,
     json_out: str | None = None,
+    unpublished_ok: bool = False,
 ) -> Report:
     """Execute the selected checks against the repository, printing as it goes.
 
     Returns:
-        The finished report, also saved to reports/ for `compare` to pick up.
+        The finished report, also saved to reports/ for `compare` to pick up. It is not
+        ok if any selected check was skipped for want of a published release, unless
+        `unpublished_ok` says that was intended (`cycle --no-upload`).
     """
     # Without an explicit build, verify the most recent one published to *this* index,
     # so alternating between a dev and a release index does the obvious thing.
@@ -123,6 +141,7 @@ def run(
         index=cfg.index_url,
         version=ctx.record.version if ctx.record else None,
         build_id=ctx.record.build_id if ctx.record else None,
+        unpublished_ok=unpublished_ok,
     )
 
     print()
@@ -343,7 +362,10 @@ def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None =
     started = time.monotonic()
 
     status, detail = PASS, ""
-    reason = blocked or _prerequisite(ctx, definition)
+    missing = None if blocked else _prerequisite(ctx, definition)
+    reason = blocked or missing
+    unpublished = bool(missing) and (definition.needs_build or definition.needs_upload) \
+        and not (definition.needs_auth and not ctx.cfg.user)
     if reason:
         status, detail = SKIP, reason
     else:
@@ -366,7 +388,7 @@ def _run_one(ctx: Context, definition: checks.CheckDef, *, blocked: str | None =
     for line in rest:
         print(dim(f"        {line}"))
     return Result(definition.name, definition.phase, status, detail, duration,
-                  definition.description)
+                  definition.description, unpublished=unpublished)
 
 
 def _prerequisite(ctx: Context, definition: checks.CheckDef) -> str | None:
@@ -402,6 +424,14 @@ def _summarise(report: Report, cfg: Config) -> None:
     print(f"  {', '.join(parts)} in {human(report.duration)}")
 
     failures = [r for r in report.results if r.status in {FAIL, ERROR}]
+    unverified = report.unverified
+    if unverified:
+        print()
+        print("  " + red(f"INCOMPLETE: {len(unverified)} selected check(s) could not run") +
+              " -- there is no release of ours on this index to test:")
+        print(dim(f"    {', '.join(r.name for r in unverified)}"))
+        print(dim("    publish one with `pipcheck cycle`, or test only what needs no release "
+                  "of ours: --phase server,mirror"))
     if not failures and not tally[PASS]:
         print(f"  {yellow('nothing ran')} -- every selected check was skipped")
         print()
@@ -413,6 +443,6 @@ def _summarise(report: Report, cfg: Config) -> None:
             print(f"    {red(result.name)}: {result.description}")
             for line in result.detail.splitlines():
                 print(f"      {dim(line)}")
-    else:
+    elif not unverified:
         print(f"  {green('repository behaves as expected')} -- {cfg.index_url}")
     print()
