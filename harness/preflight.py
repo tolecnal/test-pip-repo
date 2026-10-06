@@ -53,6 +53,21 @@ def _result(resp: Response, what: str) -> dict[str, Any]:
     return body["result"]
 
 
+def fetch_json(cfg: Config, url: str, what: str) -> dict[str, Any]:
+    """Read one of devpi's JSON views.
+
+    Returns:
+        Its `result` object.
+
+    Raises:
+        PreflightError: on any status but 200, or a body that is not devpi's JSON.
+    """
+    resp = _get(cfg, url)
+    if resp.status != HTTPStatus.OK:
+        raise PreflightError(f"reading {what} ({url}) returned HTTP {resp.status}")
+    return _result(resp, what)
+
+
 def _reach(cfg: Config, *, upload: bool) -> list[str]:
     """Prove the server answers as devpi and the index exists.
 

@@ -18,6 +18,7 @@ from . import (
     config,
     envs,
     preflight,
+    purge,
     runner,
     state,
     util,
@@ -103,6 +104,19 @@ def build_parser() -> argparse.ArgumentParser:
     remove = subs.add_parser("remove", parents=[common],
                              help="delete a release from the index")
     remove.add_argument("spec", nargs="?", help="name==version (default: the last build)")
+
+    purge_ = subs.add_parser(
+        "purge", parents=[common],
+        help="delete every release pipcheck published to the index, then reset the version",
+        description="Delete every release of the test package (and any leftover "
+                    "pipcheck-authprobe-* project) from the configured index, after you "
+                    "confirm by typing Yes. Nothing else on the index is touched. Then "
+                    "reset the version in pkg/pyproject.toml.",
+    )
+    purge_.add_argument(
+        "--reset-version", metavar="X.Y.Z", default=versioning.INITIAL_VERSION,
+        help=f"version to reset to afterwards (default: {versioning.INITIAL_VERSION})",
+    )
 
     cmp_ = subs.add_parser(
         "compare", parents=[common],
@@ -336,6 +350,120 @@ def cmd_remove(args: argparse.Namespace, cfg: config.Config, st: state.State) ->
     return EXIT_OK
 
 
+def _confirmed(prompt: str) -> bool:
+    """Ask for the literal word Yes.
+
+    Returns:
+        True only if the answer is exactly "Yes" -- not "y", not "yes", not an empty
+        line, and not end of input, so neither a stray Enter nor a closed pipe deletes
+        anything.
+    """
+    try:
+        return input(prompt).strip() == "Yes"
+    except EOFError:
+        print()
+        return False
+
+
+def _forget_index(st: state.State, index: str) -> int:
+    """Drop the build records of releases that were on `index`.
+
+    Returns:
+        How many were dropped.
+    """
+    gone = [b for b in st.builds if b.uploaded and b.index == index]
+    if st.last in gone:
+        shutil.rmtree(DIST_DIR, ignore_errors=True)  # those files are the purged release
+        builder.reset_stamp()
+    st.builds = [b for b in st.builds if b not in gone]
+    st.save()
+    return len(gone)
+
+
+def _show_plan(cfg: config.Config, targets: list[purge.Target], reset_to: str) -> bool:
+    """Print what a purge would delete.
+
+    Returns:
+        Whether there is anything to delete.
+    """
+    releases = [t for t in targets if t.version]
+    projects = [t.project for t in targets if not t.version]
+    print()
+    print(bold(f"pipcheck's projects on {cfg.index_url}"))
+    if not projects:
+        print(dim("  none -- nothing to delete"))
+        print()
+        return False
+    for project in projects:
+        versions = ", ".join(t.spec.split("==")[1] for t in releases if t.project == project)
+        print(f"  {project:<32} {versions or dim('(no releases)')}")
+    print()
+    print(f"This deletes {len(releases)} release(s) in {len(projects)} project(s) from "
+          f"{bold(cfg.index)}. Nothing else on the index is touched.")
+    print(f"Afterwards the version in pkg/pyproject.toml goes from {versioning.read()} "
+          f"to {reset_to}.")
+    return True
+
+
+def _report_purge(outcomes: list[purge.Outcome], left: list[str] | None) -> int:
+    """Print what was deleted, judged by re-reading the index where that worked.
+
+    Returns:
+        How many releases are not confirmed gone.
+    """
+    releases = [o for o in outcomes if o.target.version]
+    if left is None:  # could not re-read: fall back on what the deletes answered
+        gone = [o for o in releases if o.deleted]
+    else:
+        gone = [o for o in releases if o.target.spec not in left]
+    print()
+    print(bold(f"deleted ({len(gone)})"))
+    for outcome in gone:
+        print(f"  {green(outcome.target.spec)}")
+    failed = [o for o in releases if o not in gone]
+    if failed:
+        print()
+        print(bold(f"not deleted ({len(failed)})"))
+        for outcome in failed:
+            print(f"  {red(outcome.target.spec)}: {outcome.detail}")
+    return len(failed)
+
+
+def cmd_purge(args: argparse.Namespace, cfg: config.Config, st: state.State) -> int:
+    reset_to = versioning.validate(args.reset_version)
+    if not cfg.user:
+        raise RuntimeError("purging needs credentials (DEVPI_USER/DEVPI_PASSWORD)")
+    try:
+        targets = purge.plan(cfg)
+    except ConnectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if not _show_plan(cfg, targets, reset_to):
+        return EXIT_OK
+    if not _confirmed("Type Yes to delete them: "):
+        print(yellow("aborted -- nothing was deleted"))
+        return EXIT_FAILED
+
+    current = versioning.read()
+    outcomes = purge.execute(cfg, targets)
+    left = purge.remaining(cfg)
+    failed = _report_purge(outcomes, left)
+    if left is None:
+        print(yellow("\ncould not read the index back to confirm the deletions; "
+                     f"version left at {current}"))
+        return EXIT_FAILED
+    if failed or left:
+        print(yellow(f"\n{len(left)} release(s) remain; version left at {current}"))
+        return EXIT_FAILED
+
+    versioning.write(reset_to)
+    forgotten = _forget_index(st, cfg.index)
+    print()
+    print(green(f"{cfg.index} holds nothing of pipcheck's any more (checked by re-reading it)"))
+    print(f"version reset {current} -> {bold(reset_to)}; "
+          f"forgot {forgotten} build record(s) for {cfg.index}")
+    return EXIT_OK
+
+
 def _print_upload_failure(proc: util.Proc) -> None:
     print(red("upload failed:"))
     print(util.strip_ansi(proc.tail(25)))
@@ -484,6 +612,7 @@ def _dispatch(args: argparse.Namespace, cfg: config.Config, st: state.State) -> 
         "clean": lambda: cmd_clean(args),
         "bootstrap": lambda: cmd_bootstrap(args, cfg),
         "remove": lambda: cmd_remove(args, cfg, st),
+        "purge": lambda: cmd_purge(args, cfg, st),
         "bump": lambda: cmd_bump(args),
         "set-version": lambda: cmd_set_version(args),
         "build": lambda: cmd_build(cfg, st),

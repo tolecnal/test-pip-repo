@@ -295,7 +295,9 @@ Two things to get right before pointing `cycle` at an index:
 - **Use an index you are willing to pollute.** `cycle` publishes real `devpi-smoke`
   releases. On a **non-volatile** index they cannot be cleaned up afterwards — devpi
   answers `403 Forbidden: cannot delete version on non-volatile index` — so every run
-  leaves a permanent release behind. Keep a dedicated throwaway index for routine runs.
+  leaves a permanent release behind. Keep a dedicated throwaway index for routine runs,
+  and clear it out with `./pipcheck purge` (see [Housekeeping](#housekeeping)) when the
+  releases pile up.
 
   For an immutable index, publish **once** deliberately and then re-verify that same
   release as often as you like without adding another:
@@ -399,6 +401,52 @@ confirms the replica serves releases the primary accepted.
 ```
 
 `clean` leaves the tree as git sees it: every file it removes is generated or ignored.
+
+To empty the **index** of what pipcheck published, use `purge`:
+
+```bash
+./pipcheck purge                        # the index from your config
+./pipcheck purge --index testing/dev    # or another one
+./pipcheck purge --reset-version 1.0.0  # start numbering somewhere else afterwards
+```
+
+```
+pipcheck's projects on https://devpi.internal:3141/testing/dev
+  devpi-smoke                      0.1.1, 0.1.2, 0.1.3
+  pipcheck-authprobe-f3964f42      0.0.1
+
+This deletes 4 release(s) in 2 project(s) from testing/dev. Nothing else on the index is touched.
+Afterwards the version in pkg/pyproject.toml goes from 0.1.3 to 0.1.0.
+Type Yes to delete them: Yes
+
+deleted (4)
+  devpi-smoke==0.1.1
+  devpi-smoke==0.1.2
+  devpi-smoke==0.1.3
+  pipcheck-authprobe-f3964f42==0.0.1
+
+testing/dev holds nothing of pipcheck's any more (checked by re-reading it)
+version reset 0.1.3 -> 0.1.0; forgot 3 build record(s) for testing/dev
+```
+
+How it behaves:
+
+- **Scope:** it deletes only pipcheck's own projects: the test package, and any
+  `pipcheck-authprobe-*` project left behind if `upload_requires_auth` ever found
+  anonymous upload open. Other projects on the index are never listed or deleted, so
+  pointing it at a shared index by mistake cannot remove anyone else's packages.
+- **Confirmation:** it deletes nothing until you type exactly `Yes`. `yes`, `y`, an empty
+  line, or end of input (`</dev/null`, a closed pipe) all abort with exit code `1`.
+- **Report:** the "deleted" list comes from re-reading the index afterwards, not from the
+  HTTP answers. Anything still there is listed under "not deleted" with devpi's reason.
+- **Version reset:** the version in `pkg/pyproject.toml` returns to `0.1.0` (or
+  `--reset-version`), and the build records for that index are dropped from
+  `.pipcheck-state.json`. That happens only once the index is confirmed clear. If anything
+  remains, or the index cannot be read back, the version is left alone.
+- **Refusals:** a mirror index, and a non-volatile index (devpi refuses to delete from
+  those) are refused before anything is listed for confirmation.
+
+Reports in `reports/` are kept, so `compare` still has its baselines.
 
 ## Development
 

@@ -12,6 +12,7 @@ import tomllib
 from .config import PYPROJECT
 
 PART_NAMES = ("major", "minor", "patch", "dev", "post")
+INITIAL_VERSION = "0.1.0"  # what pkg/pyproject.toml starts at, and `purge` resets to
 _VERSION_LINE = re.compile(
     r'^(?P<prefix>version\s*=\s*")(?P<version>[^"]+)(?P<suffix>")', re.MULTILINE
 )

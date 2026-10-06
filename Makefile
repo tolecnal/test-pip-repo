@@ -9,6 +9,7 @@
 #   make lint                 ruff + isort --check-only + pyright
 #   make format               apply isort
 #   make release VERSION=2.0.0
+#   make purge                delete pipcheck's releases from the index (asks first)
 #   make clean
 #
 # Upgrade check:  make test  ->  upgrade the server  ->  make test  ->  make compare
@@ -19,7 +20,7 @@ PYTHON ?= python3
 LINT := .venvs/lint
 SOURCES := harness pkg extras
 
-.PHONY: help bootstrap doctor show test verify quick compare reports release build upload remove clean list lint format
+.PHONY: help bootstrap doctor show test verify quick compare reports release build upload remove purge clean list lint format
 
 help:
 	@$(PIPCHECK) --help
@@ -67,6 +68,9 @@ upload:
 
 remove:
 	$(PIPCHECK) remove $(SPEC)
+
+purge:
+	$(PIPCHECK) purge
 
 clean:
 	$(PIPCHECK) clean
